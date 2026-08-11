@@ -94,7 +94,7 @@ func (s *Store) SearchMemory(ctx context.Context, input SearchMemoryInput) (doma
 		normalized.ScopeMode,
 		normalized.Query,
 	)
-	fused = filterByMinRelevance(fused, normalized.MinRelevance, normalized.RetrievalMode)
+	fused = filterByMinRelevance(fused, normalized.MinRelevance)
 	applySearchDetail(fused, normalized.DetailLevel)
 	if len(fused) > normalized.Limit {
 		fused = fused[:normalized.Limit]
@@ -1058,7 +1058,6 @@ func rankingBoost(result domain.SearchResult, scopeMode string) float64 {
 func filterByMinRelevance(
 	results []domain.SearchResult,
 	minimum *float64,
-	retrievalMode string,
 ) []domain.SearchResult {
 	if minimum == nil {
 		return results
@@ -1066,35 +1065,12 @@ func filterByMinRelevance(
 
 	filtered := make([]domain.SearchResult, 0, len(results))
 	for _, result := range results {
-		if thresholdRelevance(result.Score, retrievalMode) >= *minimum {
+		if result.Score.Relevance >= *minimum {
 			filtered = append(filtered, result)
 		}
 	}
 
 	return filtered
-}
-
-func thresholdRelevance(score domain.ScoreBreakdown, retrievalMode string) float64 {
-	if score.Exact > 0 {
-		return 1
-	}
-
-	switch retrievalMode {
-	case "substring":
-		return clampScore(score.Substring)
-	case "lexical":
-		return clampScore(score.Lexical)
-	case "semantic":
-		return clampScore(score.Semantic)
-	case "hybrid":
-		return max(
-			clampScore(score.Substring),
-			clampScore(score.Lexical),
-			clampScore(score.Semantic),
-		)
-	default:
-		return 0
-	}
 }
 
 func applySearchDetail(results []domain.SearchResult, detailLevel string) {
