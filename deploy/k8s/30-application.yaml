@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-recall-coin
+  namespace: memory-recall-coin
+  labels:
+    app.kubernetes.io/name: memory-recall-coin
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: memory-recall-coin
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: memory-recall-coin
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: memory-recall-coin
+        app.kubernetes.io/component: server
+        app.kubernetes.io/part-of: memory-recall-coin
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: registry-pull
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: memory-recall-coin
+          image: rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/memory-recall-coin@sha256:d0ae1769bb58994f002ed982ab9339346bb5c3146d378343fbaba3fb54cf3d15
+          imagePullPolicy: IfNotPresent
+          args:
+            - serve
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: MEMORY_LISTEN_ADDRESS
+              value: :8080
+            - name: MEMORY_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: memory-recall-db-app
+                  key: uri
+            - name: MEMORY_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: memory-recall-runtime
+                  key: MEMORY_API_TOKEN
+            - name: MEMORY_SIGNAL_HMAC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: memory-recall-runtime
+                  key: MEMORY_SIGNAL_HMAC_SECRET
+            - name: MEMORY_DEFAULT_NAMESPACE
+              value: memory-recall-coin
+            - name: MEMORY_DEFAULT_SCOPE
+              value: workspace
+            - name: MEMORY_EMBEDDING_PROVIDER
+              value: none
+            - name: MEMORY_EMBEDDING_WORKERS
+              value: "2"
+          resources:
+            requests:
+              cpu: 150m
+              memory: 192Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            failureThreshold: 30
+            periodSeconds: 2
+            timeoutSeconds: 1
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 2
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: memory-recall-coin
+              app.kubernetes.io/component: server
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: memory-recall-coin
+  namespace: memory-recall-coin
+  labels:
+    app.kubernetes.io/name: memory-recall-coin
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: memory-recall-coin
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: memory-recall-coin
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
