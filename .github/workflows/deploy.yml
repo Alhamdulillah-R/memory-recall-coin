@@ -1,0 +1,135 @@
+name: Check, build and deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: memory-recall-coin-production
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check
+    if: github.ref == 'refs/heads/main'
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - tokyo
+      - tokyo-test
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Verify checkout
+        shell: bash
+        run: test "$(/usr/bin/git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Check
+        shell: bash
+        run: |
+          test "$(/usr/local/go/bin/go env GOVERSION)" = "go1.26.5"
+
+          mapfile -d '' -t go_files < <(/usr/bin/git ls-files -z -- '*.go')
+          test "${#go_files[@]}" -gt 0
+
+          unformatted="$(/usr/local/go/bin/gofmt -l "${go_files[@]}")"
+          if [[ -n "$unformatted" ]]; then
+            printf 'gofmt required:\n%s\n' "$unformatted" >&2
+            exit 1
+          fi
+
+          /usr/local/go/bin/go vet ./...
+          /usr/local/go/bin/go build ./...
+
+  build:
+    name: Build and push
+    if: github.ref == 'refs/heads/main'
+    needs:
+      - check
+    environment:
+      name: production
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - tokyo
+      - tokyo-build
+      - docker-builder
+    timeout-minutes: 50
+    outputs:
+      image_digest: ${{ steps.build.outputs.image_digest }}
+
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Verify checkout
+        shell: bash
+        run: test "$(/usr/bin/git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Build and push
+        id: build
+        shell: bash
+        env:
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          build_log="$(/usr/bin/mktemp)"
+          trap '/usr/bin/rm -f "$build_log"' EXIT
+
+          /usr/local/bin/mignon-build-push --config .mignon-ci.yaml --revision "$GITHUB_SHA" | /usr/bin/tee "$build_log"
+
+          mapfile -t image_refs < <(/usr/bin/sed -n 's/^IMAGE_REF=//p' "$build_log")
+          test "${#image_refs[@]}" -eq 1
+
+          image_ref="${image_refs[0]}"
+          image_pattern='^rex-tokyo-serv\.tail3078d0\.ts\.net:8443/mignon/memory-recall-coin@sha256:[0-9a-f]{64}$'
+          [[ "$image_ref" =~ $image_pattern ]]
+
+          image_digest="${image_ref##*@}"
+          [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'image_digest=%s\n' "$image_digest" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy
+    if: github.ref == 'refs/heads/main'
+    needs:
+      - build
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - tokyo
+      - tokyo-deploy
+      - k8s-deployer
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Verify checkout
+        shell: bash
+        run: test "$(/usr/bin/git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Deploy
+        shell: bash
+        env:
+          IMAGE_REF: rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/memory-recall-coin@${{ needs.build.outputs.image_digest }}
+          KUBECONFIG: /etc/mignon-ci/kubeconfigs/Alhamdulillah-R__memory-recall-coin.yaml
+        run: /usr/local/bin/mignon-deploy --config .mignon-ci.yaml --image-ref "$IMAGE_REF"

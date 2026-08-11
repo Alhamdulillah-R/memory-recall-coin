@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: github-deployer-memory-recall-coin
+  namespace: memory-recall-coin
+  labels:
+    app.kubernetes.io/name: memory-recall-coin
+    app.kubernetes.io/part-of: memory-recall-coin
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-deployer-memory-recall-coin-token
+  namespace: memory-recall-coin
+  labels:
+    app.kubernetes.io/name: memory-recall-coin
+    app.kubernetes.io/part-of: memory-recall-coin
+  annotations:
+    kubernetes.io/service-account.name: github-deployer-memory-recall-coin
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: github-deployer-memory-recall-coin
+  namespace: memory-recall-coin
+  labels:
+    app.kubernetes.io/name: memory-recall-coin
+    app.kubernetes.io/part-of: memory-recall-coin
+rules:
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    resourceNames:
+      - memory-recall-coin
+    verbs:
+      - get
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - apps
+    resources:
+      - replicasets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - events
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: github-deployer-memory-recall-coin
+  namespace: memory-recall-coin
+  labels:
+    app.kubernetes.io/name: memory-recall-coin
+    app.kubernetes.io/part-of: memory-recall-coin
+subjects:
+  - kind: ServiceAccount
+    name: github-deployer-memory-recall-coin
+    namespace: memory-recall-coin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: github-deployer-memory-recall-coin

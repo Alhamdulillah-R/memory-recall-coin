@@ -1,0 +1,533 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mignon-ci
+  labels:
+    app.kubernetes.io/part-of: mignon-ci
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: memory-recall-coin-runner-test-state
+  namespace: mignon-ci
+  labels:
+    app.kubernetes.io/name: memory-recall-coin-runner-test
+    app.kubernetes.io/part-of: mignon-ci
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: memory-recall-coin-runner-build-state
+  namespace: mignon-ci
+  labels:
+    app.kubernetes.io/name: memory-recall-coin-runner-build
+    app.kubernetes.io/part-of: mignon-ci
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: memory-recall-coin-runner-deploy-state
+  namespace: mignon-ci
+  labels:
+    app.kubernetes.io/name: memory-recall-coin-runner-deploy
+    app.kubernetes.io/part-of: mignon-ci
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-recall-coin-runner-test
+  namespace: mignon-ci
+  labels:
+    app.kubernetes.io/name: memory-recall-coin-runner-test
+    app.kubernetes.io/part-of: mignon-ci
+    mignon.dev/runner-role: test
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: memory-recall-coin-runner-test
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: memory-recall-coin-runner-test
+        app.kubernetes.io/part-of: mignon-ci
+        mignon.dev/runner-role: test
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: registry-pull
+      nodeSelector:
+        kubernetes.io/hostname: k3s-master
+      restartPolicy: Always
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 123
+        fsGroup: 123
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 60
+      initContainers:
+        - name: materialize-runner-image
+          image: rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/actions-runner@sha256:a681b4ed4c280f54c943f5150af63cf1ce946b7b8121b3b68bef9ec8de6c011f
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/local/bin/mignon-runner-materialize
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 123
+          volumeMounts:
+            - name: runner-state
+              mountPath: /runner-state
+      containers:
+        - name: runner
+          image: rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/actions-runner@sha256:a681b4ed4c280f54c943f5150af63cf1ce946b7b8121b3b68bef9ec8de6c011f
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RUNNER_REPOSITORY_URL
+              value: https://github.com/Alhamdulillah-R/memory-recall-coin
+            - name: RUNNER_NAME
+              value: memory-recall-coin-test
+            - name: RUNNER_LABELS
+              value: tokyo,tokyo-test
+            - name: RUNNER_REGISTRATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: memory-recall-coin-runner-test-registration
+                  key: token
+                  optional: true
+            - name: ACTIONS_RUNNER_HOOK_JOB_COMPLETED
+              value: /usr/local/libexec/mignon-ci/job-cleanup.sh
+            - name: ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT
+              value: "1"
+            - name: HOME
+              value: /runner-state/home
+            - name: RUNNER_TOOL_CACHE
+              value: /runner-state/app/_work/_tool
+            - name: TMPDIR
+              value: /tmp
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 3Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 123
+          volumeMounts:
+            - name: runner-state
+              mountPath: /runner-state
+            - name: runtime-temp
+              mountPath: /tmp
+      volumes:
+        - name: runner-state
+          persistentVolumeClaim:
+            claimName: memory-recall-coin-runner-test-state
+        - name: runtime-temp
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-recall-coin-runner-build
+  namespace: mignon-ci
+  labels:
+    app.kubernetes.io/name: memory-recall-coin-runner-build
+    app.kubernetes.io/part-of: mignon-ci
+    mignon.dev/runner-role: build
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: memory-recall-coin-runner-build
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: memory-recall-coin-runner-build
+        app.kubernetes.io/part-of: mignon-ci
+        mignon.dev/runner-role: build
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: registry-pull
+      nodeSelector:
+        kubernetes.io/hostname: k3s-master
+      restartPolicy: Always
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 123
+        fsGroup: 123
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 60
+      initContainers:
+        - name: materialize-runner-image
+          image: rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/actions-runner@sha256:a681b4ed4c280f54c943f5150af63cf1ce946b7b8121b3b68bef9ec8de6c011f
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/local/bin/mignon-runner-materialize
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 123
+          volumeMounts:
+            - name: runner-state
+              mountPath: /runner-state
+        - name: materialize-docker-client
+          image: rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/actions-runner@sha256:a681b4ed4c280f54c943f5150af63cf1ce946b7b8121b3b68bef9ec8de6c011f
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/local/bin/mignon-credential-materialize
+          env:
+            - name: CREDENTIAL_PROFILE
+              value: docker-client
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 123
+          volumeMounts:
+            - name: docker-client-source
+              mountPath: /credential-source
+              readOnly: true
+            - name: credential-runtime
+              mountPath: /credential-runtime
+      containers:
+        - name: runner
+          image: rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/actions-runner@sha256:a681b4ed4c280f54c943f5150af63cf1ce946b7b8121b3b68bef9ec8de6c011f
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RUNNER_REPOSITORY_URL
+              value: https://github.com/Alhamdulillah-R/memory-recall-coin
+            - name: RUNNER_NAME
+              value: memory-recall-coin-build
+            - name: RUNNER_LABELS
+              value: tokyo,tokyo-build,docker-builder
+            - name: RUNNER_REGISTRATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: memory-recall-coin-runner-build-registration
+                  key: token
+                  optional: true
+            - name: ACTIONS_RUNNER_HOOK_JOB_COMPLETED
+              value: /usr/local/libexec/mignon-ci/job-cleanup.sh
+            - name: ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT
+              value: "1"
+            - name: HOME
+              value: /runner-state/home
+            - name: RUNNER_TOOL_CACHE
+              value: /runner-state/app/_work/_tool
+            - name: TMPDIR
+              value: /tmp
+            - name: DOCKER_HOST
+              value: tcp://docker-engine.mignon-ci.svc.cluster.local:2376
+            - name: DOCKER_TLS_VERIFY
+              value: "1"
+            - name: DOCKER_CERT_PATH
+              value: /etc/mignon-ci/docker-client
+            - name: MIGNON_DOCKER_SERVER_NAME
+              value: docker-engine-0
+            - name: MIGNON_BUILD_LOCK_FILE
+              value: /global-build-lock/locks/build.lock
+            - name: MIGNON_BUILDX_CONFIG
+              value: /runner-state/buildx
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 3Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 123
+          volumeMounts:
+            - name: runner-state
+              mountPath: /runner-state
+            - name: runtime-temp
+              mountPath: /tmp
+            - name: credential-runtime
+              mountPath: /etc/mignon-ci
+              readOnly: true
+            - name: global-build-lock
+              mountPath: /global-build-lock
+      volumes:
+        - name: runner-state
+          persistentVolumeClaim:
+            claimName: memory-recall-coin-runner-build-state
+        - name: runtime-temp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: credential-runtime
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Mi
+        - name: docker-client-source
+          secret:
+            secretName: mignon-ci-docker-client
+            defaultMode: 0440
+            items:
+              - key: ca.pem
+                path: ca.pem
+              - key: cert.pem
+                path: cert.pem
+              - key: key.pem
+                path: key.pem
+        - name: global-build-lock
+          persistentVolumeClaim:
+            claimName: mignon-ci-example-runner-build-state
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-recall-coin-runner-deploy
+  namespace: mignon-ci
+  labels:
+    app.kubernetes.io/name: memory-recall-coin-runner-deploy
+    app.kubernetes.io/part-of: mignon-ci
+    mignon.dev/runner-role: deploy
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: memory-recall-coin-runner-deploy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: memory-recall-coin-runner-deploy
+        app.kubernetes.io/part-of: mignon-ci
+        mignon.dev/runner-role: deploy
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: registry-pull
+      nodeSelector:
+        kubernetes.io/hostname: k3s-master
+      restartPolicy: Always
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 123
+        fsGroup: 123
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 60
+      initContainers:
+        - name: materialize-runner-image
+          image: rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/actions-runner@sha256:a681b4ed4c280f54c943f5150af63cf1ce946b7b8121b3b68bef9ec8de6c011f
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/local/bin/mignon-runner-materialize
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 123
+          volumeMounts:
+            - name: runner-state
+              mountPath: /runner-state
+        - name: materialize-project-kubeconfig
+          image: rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/actions-runner@sha256:a681b4ed4c280f54c943f5150af63cf1ce946b7b8121b3b68bef9ec8de6c011f
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/bin/install
+          args:
+            - -D
+            - -m
+            - "0400"
+            - /credential-source/config
+            - /credential-runtime/kubeconfigs/Alhamdulillah-R__memory-recall-coin.yaml
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 123
+          volumeMounts:
+            - name: kubeconfig-source
+              mountPath: /credential-source
+              readOnly: true
+            - name: credential-runtime
+              mountPath: /credential-runtime
+      containers:
+        - name: runner
+          image: rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/actions-runner@sha256:a681b4ed4c280f54c943f5150af63cf1ce946b7b8121b3b68bef9ec8de6c011f
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RUNNER_REPOSITORY_URL
+              value: https://github.com/Alhamdulillah-R/memory-recall-coin
+            - name: RUNNER_NAME
+              value: memory-recall-coin-deploy
+            - name: RUNNER_LABELS
+              value: tokyo,tokyo-deploy,k8s-deployer
+            - name: RUNNER_REGISTRATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: memory-recall-coin-runner-deploy-registration
+                  key: token
+                  optional: true
+            - name: ACTIONS_RUNNER_HOOK_JOB_COMPLETED
+              value: /usr/local/libexec/mignon-ci/job-cleanup.sh
+            - name: ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT
+              value: "1"
+            - name: HOME
+              value: /runner-state/home
+            - name: RUNNER_TOOL_CACHE
+              value: /runner-state/app/_work/_tool
+            - name: TMPDIR
+              value: /tmp
+            - name: KUBECONFIG
+              value: >-
+                /etc/mignon-ci/kubeconfigs/Alhamdulillah-R__memory-recall-coin.yaml
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 123
+          volumeMounts:
+            - name: runner-state
+              mountPath: /runner-state
+            - name: runtime-temp
+              mountPath: /tmp
+            - name: credential-runtime
+              mountPath: /etc/mignon-ci
+              readOnly: true
+      volumes:
+        - name: runner-state
+          persistentVolumeClaim:
+            claimName: memory-recall-coin-runner-deploy-state
+        - name: runtime-temp
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: credential-runtime
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Mi
+        - name: kubeconfig-source
+          secret:
+            secretName: memory-recall-coin-deploy-kubeconfig
+            defaultMode: 0440
+            items:
+              - key: config
+                path: config

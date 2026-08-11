@@ -216,7 +216,17 @@ docker build --build-arg VERSION=dev --build-arg REVISION=local --build-arg BUIL
 - build context 与 `Dockerfile`；
 - rollout target：namespace `memory-recall-coin` 中的 `deployment/memory-recall-coin`、container `memory-recall-coin`。
 
-Repository 不包含 GitHub Actions workflow。外部 Mignon CI 负责在 clean checkout 上 build/push immutable image digest，并把既有 Deployment 的目标 container 更新到该 digest；它不负责：
+`.github/workflows/deploy.yml` 在 `main` push 或手动 `workflow_dispatch` 时串行执行：
+
+1. `Check`：在 `tokyo-test` Runner 上校验 exact checkout，只运行 `gofmt`、`go vet ./...` 与 `go build ./...`，不运行 regression tests；
+2. `Build and push`：在 `production` Environment 与 `tokyo-build` Runner 上调用 `/usr/local/bin/mignon-build-push`，只接受 `rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/memory-recall-coin@sha256:<digest>`；
+3. `Deploy`：在 `tokyo-deploy` Runner 上使用项目专属 kubeconfig `/etc/mignon-ci/kubeconfigs/Alhamdulillah-R__memory-recall-coin.yaml` 调用 `/usr/local/bin/mignon-deploy`，按 immutable digest 更新既有 Deployment。
+
+所有 job 都把 `actions/checkout` 固定到 reviewed commit，并验证 checkout `HEAD` 等于 `GITHUB_SHA`。Registry credential 只来自 GitHub `production` Environment；workflow 不接收 tag-only image，也不自行实现 rollout/rollback。
+
+Image binary 由 `Dockerfile` 内的 `task --taskfile Task.yml build:container` 编译；`mignon-build-push` 只负责 clean checkout 校验、Docker build/push 与 digest verification，不绕过 `Task.yml` 直接编译。
+
+Mignon CI 负责在 clean checkout 上 build/push immutable image digest，并把既有 Deployment 的目标 container 更新到该 digest；它不负责：
 
 - 创建或维护 GitHub Runner、Registry、Docker Engine 与 CI credentials；
 - 创建 namespace、RBAC、ServiceAccount、image pull Secret 或 Tailscale Serve；
