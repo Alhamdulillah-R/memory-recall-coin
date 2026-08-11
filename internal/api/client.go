@@ -141,6 +141,9 @@ func (c *Client) SearchMemory(ctx context.Context, input service.SearchMemoryInp
 		return domain.SearchResponse{}, err
 	}
 	for index := range response.Results {
+		if strings.TrimSpace(response.Results[index].Content) == "" {
+			continue
+		}
 		response.Results[index].Snippet = makeClientSnippet(
 			response.Results[index].Content,
 			input.Query,

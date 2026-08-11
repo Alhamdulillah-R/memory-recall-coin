@@ -28,6 +28,11 @@ const (
 	SearchAllDevices  = "all_devices"
 )
 
+const (
+	SearchDetailCompact = "compact"
+	SearchDetailFull    = "full"
+)
+
 // CallerIdentity describes the logical device, installation and workspace issuing a request.
 type CallerIdentity struct {
 	DeviceCode       string `json:"device_code,omitempty"`
@@ -166,15 +171,17 @@ type Source struct {
 
 // ScoreBreakdown makes hybrid ranking inspectable by the caller.
 type ScoreBreakdown struct {
-	Exact      float64 `json:"exact"`
-	Substring  float64 `json:"substring"`
-	Lexical    float64 `json:"lexical"`
-	Semantic   float64 `json:"semantic"`
-	Confidence float64 `json:"confidence"`
-	Evidence   float64 `json:"evidence"`
-	Locality   float64 `json:"locality"`
-	RRF        float64 `json:"rrf"`
-	Final      float64 `json:"final"`
+	Exact        float64 `json:"exact"`
+	Substring    float64 `json:"substring"`
+	Lexical      float64 `json:"lexical"`
+	Semantic     float64 `json:"semantic"`
+	Confidence   float64 `json:"confidence"`
+	Evidence     float64 `json:"evidence"`
+	Locality     float64 `json:"locality"`
+	RRF          float64 `json:"rrf"`
+	Relevance    float64 `json:"relevance"`
+	RankingBoost float64 `json:"ranking_boost"`
+	Final        float64 `json:"final"`
 }
 
 // SearchResult is a memory or source chunk returned by hybrid retrieval.
@@ -191,14 +198,14 @@ type SearchResult struct {
 	WorkspaceCode     string          `json:"workspace_code,omitempty"`
 	Type              string          `json:"type"`
 	Title             string          `json:"title"`
-	Content           string          `json:"content"`
+	Content           string          `json:"content,omitempty"`
 	Snippet           string          `json:"snippet"`
-	Metadata          json.RawMessage `json:"metadata"`
+	Metadata          json.RawMessage `json:"metadata,omitempty"`
 	Tags              []string        `json:"tags"`
 	Status            string          `json:"status"`
 	VerificationState string          `json:"verification_state"`
 	Confidence        float64         `json:"confidence"`
-	Evidence          json.RawMessage `json:"evidence"`
+	Evidence          json.RawMessage `json:"evidence,omitempty"`
 	SourcePath        string          `json:"source_path,omitempty"`
 	SourceHash        string          `json:"source_hash,omitempty"`
 	SourceRange       json.RawMessage `json:"source_range,omitempty"`
@@ -213,6 +220,7 @@ type SearchResponse struct {
 	Results         []SearchResult `json:"results"`
 	Query           string         `json:"query"`
 	ScopeMode       string         `json:"scope_mode"`
+	DetailLevel     string         `json:"detail_level"`
 	SemanticEnabled bool           `json:"semantic_enabled"`
 	SemanticError   string         `json:"semantic_error,omitempty"`
 	DurationMS      int64          `json:"duration_ms"`

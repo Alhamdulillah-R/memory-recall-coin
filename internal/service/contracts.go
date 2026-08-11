@@ -80,6 +80,9 @@ type SearchMemoryInput struct {
 	Query             string                `json:"query"`
 	RetrievalMode     string                `json:"retrieval_mode,omitempty" jsonschema:"hybrid, exact, substring, lexical, or semantic; default hybrid"`
 	ScopeMode         string                `json:"scope_mode,omitempty" jsonschema:"prefer_local, local_only, project_only, or all_devices"`
+	DetailLevel       string                `json:"detail_level,omitempty" jsonschema:"compact or full; default compact"`
+	MinRelevance      *float64              `json:"min_relevance,omitempty" jsonschema:"minimum relevance score from 0 to 1"`
+	Kinds             []string              `json:"kinds,omitempty" jsonschema:"result kinds: memory or source_chunk"`
 	TagsAny           []string              `json:"tags_any,omitempty"`
 	TagsAll           []string              `json:"tags_all,omitempty"`
 	MetadataContains  map[string]any        `json:"metadata_contains,omitempty"`
@@ -94,9 +97,63 @@ type SearchMemoryInput struct {
 	IncludeExpired    bool                  `json:"include_expired,omitempty"`
 	IncludeRefuted    bool                  `json:"include_refuted,omitempty"`
 	IncludeSuperseded bool                  `json:"include_superseded,omitempty"`
+	IncludeDeleted    bool                  `json:"include_deleted,omitempty"`
 	Limit             int                   `json:"limit,omitempty" jsonschema:"maximum results from 1 to 100; default 10"`
 	CandidateLimit    int                   `json:"candidate_limit,omitempty" jsonschema:"per-channel candidate limit from 10 to 500; default 100"`
 	Caller            domain.CallerIdentity `json:"-"`
+}
+
+// ListMemoryInput browses memories using filters without requiring a search query.
+type ListMemoryInput struct {
+	Namespace         string                `json:"namespace"`
+	ScopeMode         string                `json:"scope_mode,omitempty" jsonschema:"prefer_local, local_only, project_only, or all_devices"`
+	DetailLevel       string                `json:"detail_level,omitempty" jsonschema:"compact or full; default compact"`
+	TagsAny           []string              `json:"tags_any,omitempty"`
+	TagsAll           []string              `json:"tags_all,omitempty"`
+	MetadataContains  map[string]any        `json:"metadata_contains,omitempty"`
+	Types             []string              `json:"types,omitempty"`
+	SourcePath        string                `json:"source_path,omitempty"`
+	CreatedAfter      *time.Time            `json:"created_after,omitempty"`
+	CreatedBefore     *time.Time            `json:"created_before,omitempty"`
+	UpdatedAfter      *time.Time            `json:"updated_after,omitempty"`
+	UpdatedBefore     *time.Time            `json:"updated_before,omitempty"`
+	ObservedAfter     *time.Time            `json:"observed_after,omitempty"`
+	ObservedBefore    *time.Time            `json:"observed_before,omitempty"`
+	IncludeExpired    bool                  `json:"include_expired,omitempty"`
+	IncludeRefuted    bool                  `json:"include_refuted,omitempty"`
+	IncludeSuperseded bool                  `json:"include_superseded,omitempty"`
+	IncludeDeleted    bool                  `json:"include_deleted,omitempty"`
+	Limit             int                   `json:"limit,omitempty" jsonschema:"maximum results from 1 to 100; default 10"`
+	Caller            domain.CallerIdentity `json:"-"`
+}
+
+// SearchInput converts a filter-only listing request into the shared retrieval contract.
+func (input ListMemoryInput) SearchInput() SearchMemoryInput {
+	return SearchMemoryInput{
+		Namespace:         input.Namespace,
+		RetrievalMode:     "list",
+		ScopeMode:         input.ScopeMode,
+		DetailLevel:       input.DetailLevel,
+		Kinds:             []string{"memory"},
+		TagsAny:           input.TagsAny,
+		TagsAll:           input.TagsAll,
+		MetadataContains:  input.MetadataContains,
+		Types:             input.Types,
+		SourcePath:        input.SourcePath,
+		CreatedAfter:      input.CreatedAfter,
+		CreatedBefore:     input.CreatedBefore,
+		UpdatedAfter:      input.UpdatedAfter,
+		UpdatedBefore:     input.UpdatedBefore,
+		ObservedAfter:     input.ObservedAfter,
+		ObservedBefore:    input.ObservedBefore,
+		IncludeExpired:    input.IncludeExpired,
+		IncludeRefuted:    input.IncludeRefuted,
+		IncludeSuperseded: input.IncludeSuperseded,
+		IncludeDeleted:    input.IncludeDeleted,
+		Limit:             input.Limit,
+		CandidateLimit:    input.Limit,
+		Caller:            input.Caller,
+	}
 }
 
 // DeleteMemoryInput soft-deletes a memory using optimistic concurrency.

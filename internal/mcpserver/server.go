@@ -101,7 +101,7 @@ func New(backend service.Backend, options Options) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "memory-recall-coin", Version: options.Version},
 		&mcp.ServerOptions{
-			Instructions: `Use memory_search before relying on remembered project facts. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths.`,
+			Instructions: `Primary workflow: memory_put records durable knowledge, memory_search recalls by meaning or text, memory_list browses by filters without a query, and memory_get reads one exact ID or version. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths.`,
 			Logger:       logger,
 			PageSize:     100,
 		},
@@ -116,7 +116,8 @@ func addTools(server *mcp.Server, handlers *Handlers) {
 	addTypedTool(server, tool("memory_put", "Create a versioned memory with evidence, scope and optional TTL.", false, false, false), handlers.putMemory)
 	addTypedTool(server, tool("memory_patch", "Patch mutable memory fields using optimistic concurrency.", false, true, false), handlers.patchMemory)
 	addTypedTool(server, tool("memory_get", "Read a current memory or historical version by ID.", true, true, false), handlers.getMemory)
-	addTypedTool(server, tool("memory_search", "Run exact, substring, lexical, semantic, temporal and metadata retrieval with inspectable hybrid ranking.", true, true, false), handlers.searchMemory)
+	addTypedTool(server, tool("memory_search", "Recall relevant memories and source chunks by exact, substring, lexical, semantic or hybrid retrieval.", true, true, false), handlers.searchMemory)
+	addTypedTool(server, tool("memory_list", "Browse memories by scope, type, tags, metadata, lifecycle and time filters without a query.", true, true, false), handlers.listMemory)
 	addTypedTool(server, tool("memory_delete", "Soft-delete a memory while preserving immutable revision history.", false, true, true), handlers.deleteMemory)
 	addTypedTool(server, tool("memory_history", "List append-only revisions for a memory.", true, true, false), handlers.history)
 	addTypedTool(server, tool("memory_restore", "Restore a historical snapshot as a new current version.", false, true, false), handlers.restoreMemory)
@@ -154,6 +155,7 @@ func addTypedTool[Input, Output any](
 	repairRawJSONProperties(inputSchema)
 	repairRawJSONProperties(outputSchema)
 	relaxLocalInputDefaults(inputSchema)
+	applyInputSchemaConstraints(definition.Name, inputSchema)
 	definition.InputSchema = inputSchema
 	definition.OutputSchema = outputSchema
 
@@ -197,6 +199,161 @@ func relaxLocalInputDefaults(schema *jsonschema.Schema) {
 	}
 	for _, item := range schema.OneOf {
 		relaxLocalInputDefaults(item)
+	}
+}
+
+func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
+	setPropertyEnum(schema, "scope_type", []string{
+		domain.ScopeInstallation,
+		domain.ScopeDevice,
+		domain.ScopeWorkspace,
+		domain.ScopeProject,
+		domain.ScopeGlobal,
+	})
+	setPropertyEnum(schema, "scope_mode", []string{
+		domain.SearchPreferLocal,
+		domain.SearchLocalOnly,
+		domain.SearchProjectOnly,
+		domain.SearchAllDevices,
+	})
+	setPropertyEnum(schema, "retrieval_mode", []string{
+		"hybrid",
+		"exact",
+		"substring",
+		"lexical",
+		"semantic",
+	})
+	setPropertyEnum(schema, "detail_level", []string{"compact", "full"})
+	setPropertyEnum(schema, "verification_state", []string{
+		"unverified",
+		"supported",
+		"confirmed",
+		"contested",
+	})
+	setArrayPropertyEnum(schema, "types", []string{
+		"fact",
+		"experiment",
+		"hypothesis",
+		"decision",
+		"artifact",
+		"procedure",
+		"incident",
+		"summary",
+	})
+	setArrayPropertyEnum(schema, "kinds", []string{"memory", "source_chunk"})
+	setNumericPropertyRange(schema, "confidence", 0, 1)
+	setNumericPropertyRange(schema, "min_relevance", 0, 1)
+
+	switch toolName {
+	case "memory_search":
+		setNumericPropertyRange(schema, "limit", 1, 100)
+		setNumericPropertyRange(schema, "candidate_limit", 10, 500)
+	case "memory_list":
+		setNumericPropertyRange(schema, "limit", 1, 100)
+	case "memory_history", "memory_source_status":
+		setNumericPropertyRange(schema, "limit", 1, 200)
+	}
+
+	switch toolName {
+	case "memory_put", "memory_patch", "memory_supersede":
+		setPropertyEnum(schema, "type", []string{
+			"fact",
+			"experiment",
+			"hypothesis",
+			"decision",
+			"artifact",
+			"procedure",
+			"incident",
+			"summary",
+		})
+	case "memory_ingest_path":
+		setPropertyEnum(schema, "watch_mode", []string{"once", "sync", "watch"})
+	}
+}
+
+func setPropertyEnum(schema *jsonschema.Schema, propertyName string, values []string) {
+	walkSchema(schema, func(current *jsonschema.Schema) {
+		property, exists := current.Properties[propertyName]
+		if !exists {
+			return
+		}
+		property.Enum = stringEnum(values)
+		if schemaAllowsNull(property) {
+			property.Enum = append(property.Enum, nil)
+		}
+	})
+}
+
+func schemaAllowsNull(schema *jsonschema.Schema) bool {
+	for _, schemaType := range schema.Types {
+		if schemaType == "null" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func setArrayPropertyEnum(schema *jsonschema.Schema, propertyName string, values []string) {
+	walkSchema(schema, func(current *jsonschema.Schema) {
+		property, exists := current.Properties[propertyName]
+		if !exists || property.Items == nil {
+			return
+		}
+		property.Items.Enum = stringEnum(values)
+	})
+}
+
+func setNumericPropertyRange(schema *jsonschema.Schema, propertyName string, minimum, maximum float64) {
+	walkSchema(schema, func(current *jsonschema.Schema) {
+		property, exists := current.Properties[propertyName]
+		if !exists {
+			return
+		}
+		property.Minimum = &minimum
+		property.Maximum = &maximum
+	})
+}
+
+func stringEnum(values []string) []any {
+	result := make([]any, len(values))
+	for index, value := range values {
+		result[index] = value
+	}
+
+	return result
+}
+
+func walkSchema(schema *jsonschema.Schema, visit func(*jsonschema.Schema)) {
+	if schema == nil {
+		return
+	}
+	visit(schema)
+
+	for _, property := range schema.Properties {
+		walkSchema(property, visit)
+	}
+	for _, definition := range schema.Defs {
+		walkSchema(definition, visit)
+	}
+	for _, definition := range schema.Definitions {
+		walkSchema(definition, visit)
+	}
+	walkSchema(schema.Items, visit)
+	for _, item := range schema.PrefixItems {
+		walkSchema(item, visit)
+	}
+	for _, item := range schema.ItemsArray {
+		walkSchema(item, visit)
+	}
+	for _, item := range schema.AllOf {
+		walkSchema(item, visit)
+	}
+	for _, item := range schema.AnyOf {
+		walkSchema(item, visit)
+	}
+	for _, item := range schema.OneOf {
+		walkSchema(item, visit)
 	}
 }
 
@@ -326,7 +483,18 @@ func (h *Handlers) getMemory(ctx context.Context, _ *mcp.CallToolRequest, input 
 }
 
 func (h *Handlers) searchMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.SearchMemoryInput) (*mcp.CallToolResult, domain.SearchResponse, error) {
+	if input.DetailLevel == "" {
+		input.DetailLevel = domain.SearchDetailCompact
+	}
 	result, err := h.backend.SearchMemory(ctx, input)
+	return nil, result, err
+}
+
+func (h *Handlers) listMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.ListMemoryInput) (*mcp.CallToolResult, domain.SearchResponse, error) {
+	if input.DetailLevel == "" {
+		input.DetailLevel = domain.SearchDetailCompact
+	}
+	result, err := h.backend.SearchMemory(ctx, input.SearchInput())
 	return nil, result, err
 }
 

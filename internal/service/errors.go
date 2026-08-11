@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -28,6 +29,13 @@ func (e *Error) Error() string {
 	if e == nil {
 		return ""
 	}
+	if len(e.Details) > 0 {
+		details, err := json.Marshal(e.Details)
+		if err == nil {
+			return fmt.Sprintf("%s: %s; details=%s", e.Code, e.Message, details)
+		}
+	}
+
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 

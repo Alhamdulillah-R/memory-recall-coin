@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -16,7 +17,14 @@ import (
 	"github.com/Alhamdulillah-R/memory-recall-coin/internal/embedding"
 )
 
-const rrfConstant = 60.0
+const (
+	rrfConstant        = 60.0
+	maxRRFScore        = (4.0 + 2.0 + 1.5 + 1.0) / (rrfConstant + 1.0)
+	qualityWeight      = 0.03
+	localityWeight     = 0.02
+	relevanceWeight    = 1 - qualityWeight - localityWeight
+	maxEvidenceQuality = 3.0
+)
 
 type searchCandidate struct {
 	Result    domain.SearchResult
@@ -38,6 +46,9 @@ func (s *Store) SearchMemory(ctx context.Context, input SearchMemoryInput) (doma
 	normalized, err := normalizeSearchInput(input)
 	if err != nil {
 		return domain.SearchResponse{}, err
+	}
+	if normalized.RetrievalMode == "list" {
+		return s.listMemory(ctx, normalized, startedAt)
 	}
 
 	channels := selectedChannels(normalized.RetrievalMode)
@@ -76,7 +87,15 @@ func (s *Store) SearchMemory(ctx context.Context, input SearchMemoryInput) (doma
 		channelCandidates[result.Name] = result.Candidates
 	}
 
-	fused := fuseCandidates(channelCandidates, normalized.Caller)
+	fused := fuseCandidates(
+		channelCandidates,
+		normalized.Caller,
+		normalized.RetrievalMode,
+		normalized.ScopeMode,
+		normalized.Query,
+	)
+	fused = filterByMinRelevance(fused, normalized.MinRelevance, normalized.RetrievalMode)
+	applySearchDetail(fused, normalized.DetailLevel)
 	if len(fused) > normalized.Limit {
 		fused = fused[:normalized.Limit]
 	}
@@ -90,6 +109,7 @@ func (s *Store) SearchMemory(ctx context.Context, input SearchMemoryInput) (doma
 		Results:         fused,
 		Query:           normalized.Query,
 		ScopeMode:       normalized.ScopeMode,
+		DetailLevel:     normalized.DetailLevel,
 		SemanticEnabled: semanticEnabled,
 		SemanticError:   semanticError,
 		DurationMS:      time.Since(startedAt).Milliseconds(),
@@ -103,16 +123,35 @@ func normalizeSearchInput(input SearchMemoryInput) (SearchMemoryInput, error) {
 		return SearchMemoryInput{}, err
 	}
 	input.Query = strings.TrimSpace(input.Query)
-	if input.Query == "" {
+	if input.Query == "" && input.RetrievalMode != "list" {
 		return SearchMemoryInput{}, NewError(CodeInvalidArgument, "query is required")
 	}
 	if input.RetrievalMode == "" {
 		input.RetrievalMode = "hybrid"
 	}
 	switch input.RetrievalMode {
-	case "hybrid", "exact", "substring", "lexical", "semantic":
+	case "hybrid", "exact", "substring", "lexical", "semantic", "list":
 	default:
 		return SearchMemoryInput{}, NewError(CodeInvalidArgument, "unsupported retrieval_mode")
+	}
+	if input.DetailLevel == "" {
+		input.DetailLevel = domain.SearchDetailFull
+	}
+	switch input.DetailLevel {
+	case domain.SearchDetailCompact, domain.SearchDetailFull:
+	default:
+		return SearchMemoryInput{}, NewError(CodeInvalidArgument, "unsupported detail_level")
+	}
+	if input.MinRelevance != nil {
+		if math.IsNaN(*input.MinRelevance) || math.IsInf(*input.MinRelevance, 0) {
+			return SearchMemoryInput{}, NewError(CodeInvalidArgument, "min_relevance must be finite")
+		}
+		if *input.MinRelevance < 0 || *input.MinRelevance > 1 {
+			return SearchMemoryInput{}, NewError(CodeInvalidArgument, "min_relevance must be between 0 and 1")
+		}
+		if input.RetrievalMode == "list" {
+			return SearchMemoryInput{}, NewError(CodeInvalidArgument, "min_relevance is not supported for list retrieval")
+		}
 	}
 	if input.ScopeMode == "" {
 		input.ScopeMode = domain.SearchPreferLocal
@@ -139,6 +178,11 @@ func normalizeSearchInput(input SearchMemoryInput) (SearchMemoryInput, error) {
 	}
 	input.TagsAny = normalizeTags(input.TagsAny)
 	input.TagsAll = normalizeTags(input.TagsAll)
+	normalizedKinds, err := normalizeSearchKinds(input.Kinds)
+	if err != nil {
+		return SearchMemoryInput{}, err
+	}
+	input.Kinds = normalizedKinds
 	for _, memoryType := range input.Types {
 		if err := validateMemoryType(memoryType); err != nil {
 			return SearchMemoryInput{}, err
@@ -156,20 +200,172 @@ func selectedChannels(mode string) []string {
 	return []string{mode}
 }
 
-func (s *Store) textCandidates(ctx context.Context, input SearchMemoryInput, channel string) ([]searchCandidate, error) {
-	memoryCandidates, err := s.queryMemoryTextChannel(ctx, input, channel)
+func normalizeSearchKinds(kinds []string) ([]string, error) {
+	if len(kinds) == 0 {
+		return nil, nil
+	}
+
+	normalized := make([]string, 0, len(kinds))
+	seen := make(map[string]struct{}, len(kinds))
+	for _, rawKind := range kinds {
+		kind := strings.ToLower(strings.TrimSpace(rawKind))
+		switch kind {
+		case "memory", "source_chunk":
+		default:
+			return nil, NewError(CodeInvalidArgument, "unsupported result kind")
+		}
+		if _, exists := seen[kind]; exists {
+			continue
+		}
+		seen[kind] = struct{}{}
+		normalized = append(normalized, kind)
+	}
+
+	return normalized, nil
+}
+
+func resultKindAllowed(kinds []string, expected string) bool {
+	if len(kinds) == 0 {
+		return true
+	}
+	for _, kind := range kinds {
+		if kind == expected {
+			return true
+		}
+	}
+
+	return false
+}
+
+/**
+ * listMemory returns filter-only results ordered by update time without invoking retrieval channels.
+ * @param ctx     request context
+ * @param input   normalized search filters
+ * @param started request start time
+ * @return        memory or source chunk listing
+ */
+func (s *Store) listMemory(
+	ctx context.Context,
+	input SearchMemoryInput,
+	started time.Time,
+) (domain.SearchResponse, error) {
+	candidates := make([]searchCandidate, 0)
+	if resultKindAllowed(input.Kinds, "memory") {
+		memoryCandidates, err := s.queryMemoryList(ctx, input)
+		if err != nil {
+			return domain.SearchResponse{}, err
+		}
+		candidates = append(candidates, memoryCandidates...)
+	}
+	if resultKindAllowed(input.Kinds, "source_chunk") {
+		sourceCandidates, err := s.querySourceList(ctx, input)
+		if err != nil {
+			return domain.SearchResponse{}, err
+		}
+		candidates = append(candidates, sourceCandidates...)
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if !candidates[i].UpdatedAt.Equal(candidates[j].UpdatedAt) {
+			return candidates[i].UpdatedAt.After(candidates[j].UpdatedAt)
+		}
+		return candidateKey(candidates[i]) < candidateKey(candidates[j])
+	})
+
+	results := make([]domain.SearchResult, len(candidates))
+	for index, candidate := range candidates {
+		result := candidate.Result
+		decorateSearchResult(&result, input.Caller, input.ScopeMode, "")
+		result.Score.Relevance = 0
+		result.Score.RankingBoost = 0
+		result.Score.Final = 0
+		results[index] = result
+	}
+	applySearchDetail(results, input.DetailLevel)
+	count := len(results)
+	if len(results) > input.Limit {
+		results = results[:input.Limit]
+	}
+
+	return domain.SearchResponse{
+		Results:         results,
+		Query:           input.Query,
+		ScopeMode:       input.ScopeMode,
+		DetailLevel:     input.DetailLevel,
+		SemanticEnabled: s.embedding != nil && s.embedding.Enabled(),
+		DurationMS:      time.Since(started).Milliseconds(),
+		CandidateCounts: map[string]int{"list": count},
+	}, nil
+}
+
+func (s *Store) queryMemoryList(ctx context.Context, input SearchMemoryInput) ([]searchCandidate, error) {
+	filters, args, err := buildMemoryFilters(input, "m", nil)
 	if err != nil {
 		return nil, err
 	}
-	sourceCandidates, err := s.querySourceTextChannel(ctx, input, channel)
+	args = append(args, input.CandidateLimit)
+
+	query := `SELECT ` + memorySearchColumns(`0.0`) + `
+        FROM memories m
+        WHERE ` + filters + `
+        ORDER BY m.updated_at DESC, m.id
+        LIMIT $` + fmt.Sprint(len(args))
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, WrapError(CodeInternal, "list memory candidates", err)
+	}
+	defer rows.Close()
+
+	return scanSearchCandidates(rows, "list")
+}
+
+func (s *Store) querySourceList(ctx context.Context, input SearchMemoryInput) ([]searchCandidate, error) {
+	if !sourceTypeAllowed(input.Types) || len(input.TagsAll) > 0 || len(input.TagsAny) > 0 {
+		return nil, nil
+	}
+
+	filters, args, err := buildSourceFilters(input, "s", nil)
 	if err != nil {
 		return nil, err
+	}
+	args = append(args, input.CandidateLimit)
+
+	query := `SELECT ` + sourceSearchColumns(`0.0`) + `
+        FROM source_chunks c
+        JOIN sources s ON s.current_content_id = c.content_id
+        WHERE ` + filters + `
+        ORDER BY s.updated_at DESC, c.id
+        LIMIT $` + fmt.Sprint(len(args))
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, WrapError(CodeInternal, "list source candidates", err)
+	}
+	defer rows.Close()
+
+	return scanSearchCandidates(rows, "list")
+}
+
+func (s *Store) textCandidates(ctx context.Context, input SearchMemoryInput, channel string) ([]searchCandidate, error) {
+	memoryCandidates := make([]searchCandidate, 0)
+	if resultKindAllowed(input.Kinds, "memory") {
+		var err error
+		memoryCandidates, err = s.queryMemoryTextChannel(ctx, input, channel)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	sourceCandidates := make([]searchCandidate, 0)
+	if resultKindAllowed(input.Kinds, "source_chunk") {
+		var err error
+		sourceCandidates, err = s.querySourceTextChannel(ctx, input, channel)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	candidates := append(memoryCandidates, sourceCandidates...)
-	sort.Slice(candidates, func(i, j int) bool {
-		return channelScore(candidates[i].Result.Score, channel) > channelScore(candidates[j].Result.Score, channel)
-	})
+	sortCandidatesByChannel(candidates, channel)
 	if len(candidates) > input.CandidateLimit {
 		candidates = candidates[:input.CandidateLimit]
 	}
@@ -188,19 +384,36 @@ func (s *Store) semanticCandidates(ctx context.Context, input SearchMemoryInput)
 	if len(vector) != embedding.Dimensions {
 		return nil, NewError(CodeInternal, "embedding provider returned an invalid query vector")
 	}
-
-	memoryCandidates, err := s.queryMemorySemantic(ctx, input, pgvector.NewVector(vector))
-	if err != nil {
-		return nil, err
+	nonZero := false
+	for _, value := range vector {
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+			return nil, NewError(CodeInternal, "embedding provider returned a non-finite query vector")
+		}
+		if value != 0 {
+			nonZero = true
+		}
 	}
-	sourceCandidates, err := s.querySourceSemantic(ctx, input, pgvector.NewVector(vector))
-	if err != nil {
-		return nil, err
+	if !nonZero {
+		return nil, NewError(CodeInternal, "embedding provider returned a zero query vector")
+	}
+
+	memoryCandidates := make([]searchCandidate, 0)
+	if resultKindAllowed(input.Kinds, "memory") {
+		memoryCandidates, err = s.queryMemorySemantic(ctx, input, pgvector.NewVector(vector))
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	sourceCandidates := make([]searchCandidate, 0)
+	if resultKindAllowed(input.Kinds, "source_chunk") {
+		sourceCandidates, err = s.querySourceSemantic(ctx, input, pgvector.NewVector(vector))
+		if err != nil {
+			return nil, err
+		}
 	}
 	candidates := append(memoryCandidates, sourceCandidates...)
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Result.Score.Semantic > candidates[j].Result.Score.Semantic
-	})
+	sortCandidatesByChannel(candidates, "semantic")
 	if len(candidates) > input.CandidateLimit {
 		candidates = candidates[:input.CandidateLimit]
 	}
@@ -210,6 +423,11 @@ func (s *Store) semanticCandidates(ctx context.Context, input SearchMemoryInput)
 
 func (s *Store) queryMemoryTextChannel(ctx context.Context, input SearchMemoryInput, channel string) ([]searchCandidate, error) {
 	args := []any{input.Query}
+	substringPatternPlaceholder := ""
+	if channel == "substring" {
+		args = append(args, "%"+escapeLikePattern(input.Query)+"%")
+		substringPatternPlaceholder = "$" + fmt.Sprint(len(args))
+	}
 	filters, args, err := buildMemoryFilters(input, "m", args)
 	if err != nil {
 		return nil, err
@@ -233,7 +451,7 @@ func (s *Store) queryMemoryTextChannel(ctx context.Context, input SearchMemoryIn
             WHEN lower($1) = ANY(m.tags) THEN 2.0
             ELSE 0.0 END`
 	case "substring":
-		predicate = `m.search_text ILIKE '%' || $1 || '%'`
+		predicate = `m.search_text ILIKE ` + substringPatternPlaceholder + ` ESCAPE E'\\'`
 		scoreExpression = `greatest(similarity(m.search_text, $1),
             CASE WHEN strpos(lower(m.search_text), lower($1)) > 0 THEN 0.5 ELSE 0 END)`
 	case "lexical":
@@ -269,6 +487,11 @@ func (s *Store) querySourceTextChannel(ctx context.Context, input SearchMemoryIn
 	}
 
 	args := []any{input.Query}
+	substringPatternPlaceholder := ""
+	if channel == "substring" {
+		args = append(args, "%"+escapeLikePattern(input.Query)+"%")
+		substringPatternPlaceholder = "$" + fmt.Sprint(len(args))
+	}
 	filters, args, err := buildSourceFilters(input, "s", args)
 	if err != nil {
 		return nil, err
@@ -289,9 +512,11 @@ func (s *Store) querySourceTextChannel(ctx context.Context, input SearchMemoryIn
             WHEN lower(c.content) = lower($1) THEN 3.0
             ELSE 0.0 END`
 	case "substring":
-		predicate = `(c.content ILIKE '%' || $1 || '%' OR s.original_absolute_path ILIKE '%' || $1 || '%')`
+		predicate = `(c.content ILIKE ` + substringPatternPlaceholder + ` ESCAPE E'\\'
+            OR s.original_absolute_path ILIKE ` + substringPatternPlaceholder + ` ESCAPE E'\\')`
 		scoreExpression = `greatest(similarity(c.content, $1), similarity(s.original_absolute_path, $1),
-            CASE WHEN strpos(lower(c.content), lower($1)) > 0 THEN 0.5 ELSE 0 END)`
+            CASE WHEN strpos(lower(c.content), lower($1)) > 0
+                OR strpos(lower(s.original_absolute_path), lower($1)) > 0 THEN 0.5 ELSE 0 END)`
 	case "lexical":
 		predicate = `c.search_tsv @@ websearch_to_tsquery('simple', $1)`
 		scoreExpression = `ts_rank_cd(c.search_tsv, websearch_to_tsquery('simple', $1), 32)`
@@ -325,7 +550,7 @@ func (s *Store) queryMemorySemantic(ctx context.Context, input SearchMemoryInput
 	modelPlaceholder := fmt.Sprintf("$%d", len(args))
 	args = append(args, input.CandidateLimit)
 
-	query := `SELECT ` + memorySearchColumns(`1.0 - (m.embedding <=> $1)`) + `
+	query := `SELECT ` + memorySearchColumns(`coalesce(1.0 - (m.embedding <=> $1), 0.0)`) + `
 		FROM memories m
 		WHERE m.embedding IS NOT NULL AND m.embedding_model = ` + modelPlaceholder + ` AND ` + filters + `
         ORDER BY m.embedding <=> $1, m.updated_at DESC, m.id
@@ -353,7 +578,7 @@ func (s *Store) querySourceSemantic(ctx context.Context, input SearchMemoryInput
 	modelPlaceholder := fmt.Sprintf("$%d", len(args))
 	args = append(args, input.CandidateLimit)
 
-	query := `SELECT ` + sourceSearchColumns(`1.0 - (c.embedding <=> $1)`) + `
+	query := `SELECT ` + sourceSearchColumns(`coalesce(1.0 - (c.embedding <=> $1), 0.0)`) + `
 		FROM source_chunks c
 		JOIN sources s ON s.current_content_id = c.content_id
 		WHERE c.embedding IS NOT NULL AND c.embedding_model = ` + modelPlaceholder + ` AND ` + filters + `
@@ -371,7 +596,9 @@ func (s *Store) querySourceSemantic(ctx context.Context, input SearchMemoryInput
 func buildMemoryFilters(input SearchMemoryInput, alias string, args []any) (string, []any, error) {
 	conditions := []string{alias + ".namespace = $" + fmt.Sprint(len(args)+1)}
 	args = append(args, input.Namespace)
-	conditions = append(conditions, alias+".lifecycle_status <> 'deleted'")
+	if !input.IncludeDeleted {
+		conditions = append(conditions, alias+".lifecycle_status <> 'deleted'")
+	}
 	if !input.IncludeExpired {
 		conditions = append(conditions, alias+".lifecycle_status <> 'expired'", "("+alias+".expires_at IS NULL OR "+alias+".expires_at > statement_timestamp())")
 	}
@@ -404,8 +631,8 @@ func buildMemoryFilters(input SearchMemoryInput, alias string, args []any) (stri
 		conditions = append(conditions, alias+".metadata @> $"+fmt.Sprint(len(args))+"::jsonb")
 	}
 	if input.SourcePath != "" {
-		args = append(args, "%"+input.SourcePath+"%")
-		conditions = append(conditions, alias+".source_path ILIKE $"+fmt.Sprint(len(args)))
+		args = append(args, "%"+escapeLikePattern(input.SourcePath)+"%")
+		conditions = append(conditions, alias+".source_path ILIKE $"+fmt.Sprint(len(args))+` ESCAPE E'\\'`)
 	}
 	conditions, args = appendTimeFilter(conditions, args, alias+".created_at", input.CreatedAfter, input.CreatedBefore)
 	conditions, args = appendTimeFilter(conditions, args, alias+".updated_at", input.UpdatedAfter, input.UpdatedBefore)
@@ -415,11 +642,13 @@ func buildMemoryFilters(input SearchMemoryInput, alias string, args []any) (stri
 }
 
 func buildSourceFilters(input SearchMemoryInput, alias string, args []any) (string, []any, error) {
-	conditions := []string{
-		alias + ".namespace = $" + fmt.Sprint(len(args)+1),
-		alias + ".lifecycle_status = 'active'",
-	}
+	conditions := []string{alias + ".namespace = $" + fmt.Sprint(len(args)+1)}
 	args = append(args, input.Namespace)
+	if input.IncludeDeleted {
+		conditions = append(conditions, alias+".lifecycle_status IN ('active', 'deleted')")
+	} else {
+		conditions = append(conditions, alias+".lifecycle_status = 'active'")
+	}
 	if !input.IncludeExpired {
 		conditions = append(conditions, "("+alias+".expires_at IS NULL OR "+alias+".expires_at > statement_timestamp())")
 	}
@@ -433,8 +662,8 @@ func buildSourceFilters(input SearchMemoryInput, alias string, args []any) (stri
 		conditions = append(conditions, alias+".metadata @> $"+fmt.Sprint(len(args))+"::jsonb")
 	}
 	if input.SourcePath != "" {
-		args = append(args, "%"+input.SourcePath+"%")
-		conditions = append(conditions, alias+".original_absolute_path ILIKE $"+fmt.Sprint(len(args)))
+		args = append(args, "%"+escapeLikePattern(input.SourcePath)+"%")
+		conditions = append(conditions, alias+".original_absolute_path ILIKE $"+fmt.Sprint(len(args))+` ESCAPE E'\\'`)
 	}
 	conditions, args = appendTimeFilter(conditions, args, alias+".created_at", input.CreatedAfter, input.CreatedBefore)
 	conditions, args = appendTimeFilter(conditions, args, alias+".updated_at", input.UpdatedAfter, input.UpdatedBefore)
@@ -478,6 +707,14 @@ func appendTimeFilter(
 	}
 
 	return conditions, args
+}
+
+func escapeLikePattern(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	value = strings.ReplaceAll(value, `_`, `\_`)
+
+	return value
 }
 
 func memorySearchColumns(scoreExpression string) string {
@@ -557,6 +794,7 @@ func scanSearchCandidates(rows rowsScanner, channel string) ([]searchCandidate, 
 		); err != nil {
 			return nil, WrapError(CodeInternal, "scan "+channel+" search candidate", err)
 		}
+		channelScore = finiteScore(channelScore)
 		switch channel {
 		case "exact":
 			result.Score.Exact = channelScore
@@ -565,7 +803,7 @@ func scanSearchCandidates(rows rowsScanner, channel string) ([]searchCandidate, 
 		case "lexical":
 			result.Score.Lexical = channelScore
 		case "semantic":
-			result.Score.Semantic = channelScore
+			result.Score.Semantic = clampScore(channelScore)
 		}
 		candidates = append(candidates, candidate)
 	}
@@ -576,12 +814,22 @@ func scanSearchCandidates(rows rowsScanner, channel string) ([]searchCandidate, 
 	return candidates, nil
 }
 
-func fuseCandidates(channels map[string][]searchCandidate, caller domain.CallerIdentity) []domain.SearchResult {
+func fuseCandidates(
+	channels map[string][]searchCandidate,
+	caller domain.CallerIdentity,
+	retrievalMode string,
+	scopeMode string,
+	query string,
+) []domain.SearchResult {
 	merged := make(map[string]*searchCandidate)
 	weights := map[string]float64{
-		"exact": 4.0, "substring": 2.0, "lexical": 1.5, "semantic": 1.0,
+		"exact":     4.0,
+		"substring": 2.0,
+		"lexical":   1.5,
+		"semantic":  1.0,
 	}
-	for channel, candidates := range channels {
+	for _, channel := range selectedChannels(retrievalMode) {
+		candidates := channels[channel]
 		for index, candidate := range candidates {
 			key := candidate.Result.Kind + "\x00" + candidate.Result.ID + "\x00" + candidate.Result.SourceID
 			current, exists := merged[key]
@@ -598,35 +846,26 @@ func fuseCandidates(channels map[string][]searchCandidate, caller domain.CallerI
 	candidates := make([]searchCandidate, 0, len(merged))
 	for _, candidate := range merged {
 		result := &candidate.Result
-		result.Score.Confidence = result.Confidence
-		result.Score.Evidence = evidenceScore(result.Evidence)
-		result.Score.Locality = localityScore(*result, caller)
-		result.IsLocal = result.Score.Locality >= 60
-		result.Snippet = makeSnippet(result.Content, "", 360)
-		result.Score.Final = finalDiagnosticScore(*result)
+		decorateSearchResult(result, caller, scopeMode, query)
+		result.Score.Relevance = retrievalRelevance(result.Score, retrievalMode)
+		result.Score.RankingBoost = rankingBoost(*result, scopeMode)
+		result.Score.Final = clampScore(
+			relevanceWeight*result.Score.Relevance + result.Score.RankingBoost,
+		)
 		candidates = append(candidates, *candidate)
 	}
 
 	sort.SliceStable(candidates, func(i, j int) bool {
 		left := candidates[i]
 		right := candidates[j]
-		if rankStatus(left.Result.Status) != rankStatus(right.Result.Status) {
-			return rankStatus(left.Result.Status) > rankStatus(right.Result.Status)
+		if retrievalMode != "hybrid" && left.Result.Score.Relevance != right.Result.Score.Relevance {
+			return left.Result.Score.Relevance > right.Result.Score.Relevance
 		}
-		if left.Result.Score.Exact != right.Result.Score.Exact {
-			return left.Result.Score.Exact > right.Result.Score.Exact
+		if left.Result.Score.Final != right.Result.Score.Final {
+			return left.Result.Score.Final > right.Result.Score.Final
 		}
-		if rankVerification(left.Result.VerificationState) != rankVerification(right.Result.VerificationState) {
-			return rankVerification(left.Result.VerificationState) > rankVerification(right.Result.VerificationState)
-		}
-		if left.Result.Score.Evidence != right.Result.Score.Evidence {
-			return left.Result.Score.Evidence > right.Result.Score.Evidence
-		}
-		if left.Result.Confidence != right.Result.Confidence {
-			return left.Result.Confidence > right.Result.Confidence
-		}
-		if left.Result.Score.Locality != right.Result.Score.Locality {
-			return left.Result.Score.Locality > right.Result.Score.Locality
+		if left.Result.Score.Relevance != right.Result.Score.Relevance {
+			return left.Result.Score.Relevance > right.Result.Score.Relevance
 		}
 		if left.Result.Score.RRF != right.Result.Score.RRF {
 			return left.Result.Score.RRF > right.Result.Score.RRF
@@ -634,7 +873,7 @@ func fuseCandidates(channels map[string][]searchCandidate, caller domain.CallerI
 		if !left.UpdatedAt.Equal(right.UpdatedAt) {
 			return left.UpdatedAt.After(right.UpdatedAt)
 		}
-		return left.Result.ID < right.Result.ID
+		return candidateKey(left) < candidateKey(right)
 	})
 
 	results := make([]domain.SearchResult, len(candidates))
@@ -646,33 +885,51 @@ func fuseCandidates(channels map[string][]searchCandidate, caller domain.CallerI
 }
 
 func mergeChannelScore(target *domain.ScoreBreakdown, source domain.ScoreBreakdown) {
-	if source.Exact > target.Exact {
-		target.Exact = source.Exact
+	if finiteScore(source.Exact) > target.Exact {
+		target.Exact = finiteScore(source.Exact)
 	}
-	if source.Substring > target.Substring {
-		target.Substring = source.Substring
+	if finiteScore(source.Substring) > target.Substring {
+		target.Substring = finiteScore(source.Substring)
 	}
-	if source.Lexical > target.Lexical {
-		target.Lexical = source.Lexical
+	if finiteScore(source.Lexical) > target.Lexical {
+		target.Lexical = finiteScore(source.Lexical)
 	}
-	if source.Semantic > target.Semantic {
-		target.Semantic = source.Semantic
+	if finiteScore(source.Semantic) > target.Semantic {
+		target.Semantic = finiteScore(source.Semantic)
 	}
 }
 
 func channelScore(score domain.ScoreBreakdown, channel string) float64 {
 	switch channel {
 	case "exact":
-		return score.Exact
+		return finiteScore(score.Exact)
 	case "substring":
-		return score.Substring
+		return finiteScore(score.Substring)
 	case "lexical":
-		return score.Lexical
+		return finiteScore(score.Lexical)
 	case "semantic":
-		return score.Semantic
+		return finiteScore(score.Semantic)
 	default:
 		return 0
 	}
+}
+
+func sortCandidatesByChannel(candidates []searchCandidate, channel string) {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		leftScore := channelScore(candidates[i].Result.Score, channel)
+		rightScore := channelScore(candidates[j].Result.Score, channel)
+		if leftScore != rightScore {
+			return leftScore > rightScore
+		}
+		if !candidates[i].UpdatedAt.Equal(candidates[j].UpdatedAt) {
+			return candidates[i].UpdatedAt.After(candidates[j].UpdatedAt)
+		}
+		return candidateKey(candidates[i]) < candidateKey(candidates[j])
+	})
+}
+
+func candidateKey(candidate searchCandidate) string {
+	return candidate.Result.Kind + "\x00" + candidate.Result.ID + "\x00" + candidate.Result.SourceID
 }
 
 func sourceTypeAllowed(types []string) bool {
@@ -717,23 +974,6 @@ func evidenceScore(raw json.RawMessage) float64 {
 	return float64(len(entries))
 }
 
-func rankStatus(status string) int {
-	switch status {
-	case domain.StatusActive:
-		return 5
-	case domain.StatusSuperseded:
-		return 4
-	case domain.StatusRefuted:
-		return 3
-	case domain.StatusExpired:
-		return 2
-	case domain.StatusDeleted:
-		return 1
-	default:
-		return 0
-	}
-}
-
 func rankVerification(state string) int {
 	switch state {
 	case "confirmed":
@@ -749,17 +989,150 @@ func rankVerification(state string) int {
 	}
 }
 
-func finalDiagnosticScore(result domain.SearchResult) float64 {
-	exactBucket := 0.0
-	if result.Score.Exact > 0 {
-		exactBucket = 1
+func decorateSearchResult(
+	result *domain.SearchResult,
+	caller domain.CallerIdentity,
+	scopeMode string,
+	query string,
+) {
+	result.Confidence = clampScore(result.Confidence)
+	result.Score.Confidence = result.Confidence
+	result.Score.Evidence = evidenceScore(result.Evidence)
+	result.Score.Locality = localityScore(*result, caller)
+	result.IsLocal = result.Score.Locality >= 60
+	result.Snippet = makeSnippet(result.Content, query, 360)
+}
+
+func retrievalRelevance(score domain.ScoreBreakdown, retrievalMode string) float64 {
+	switch retrievalMode {
+	case "exact":
+		return clampScore(score.Exact / 5.0)
+	case "substring":
+		return clampScore(score.Substring)
+	case "lexical":
+		return clampScore(score.Lexical)
+	case "semantic":
+		return clampScore(score.Semantic)
+	case "hybrid":
+		return hybridRelevance(score)
+	default:
+		return 0
+	}
+}
+
+func hybridRelevance(score domain.ScoreBreakdown) float64 {
+	agreement := clampScore(score.RRF / maxRRFScore)
+	exact := 0.0
+	if score.Exact > 0 {
+		exact = clampScore(score.Exact / 5.0)
+		// Hybrid 为 exact 保留独立 tier，且 exact strength 的相邻档位不会被 ranking boost 翻转。
+		return clampScore(0.45 + 0.55*exact)
+	}
+	substring := 0.0
+	if score.Substring > 0 {
+		substring = 0.55 + 0.4*clampScore(score.Substring)
+	}
+	lexical := 0.0
+	if score.Lexical > 0 {
+		lexical = 0.5 + 0.45*clampScore(score.Lexical)
+	}
+	semantic := clampScore(score.Semantic)
+
+	bestChannel := max(exact, substring, lexical, semantic)
+
+	return clampScore(0.59*bestChannel + 0.01*agreement)
+}
+
+func rankingBoost(result domain.SearchResult, scopeMode string) float64 {
+	verification := clampScore(float64(rankVerification(result.VerificationState)) / 4.0)
+	evidence := clampScore(result.Score.Evidence / maxEvidenceQuality)
+	quality := 0.5*result.Score.Confidence + 0.3*verification + 0.2*evidence
+	boost := qualityWeight * clampScore(quality)
+	if scopeMode == domain.SearchPreferLocal {
+		boost += localityWeight * clampScore(result.Score.Locality/100.0)
 	}
 
-	return float64(rankStatus(result.Status))*1e9 +
-		exactBucket*1e8 + result.Score.Exact*1e7 +
-		float64(rankVerification(result.VerificationState))*1e6 +
-		result.Score.Evidence*1e5 + result.Confidence*1e4 +
-		result.Score.Locality*10 + result.Score.RRF
+	return clampScore(boost)
+}
+
+func filterByMinRelevance(
+	results []domain.SearchResult,
+	minimum *float64,
+	retrievalMode string,
+) []domain.SearchResult {
+	if minimum == nil {
+		return results
+	}
+
+	filtered := make([]domain.SearchResult, 0, len(results))
+	for _, result := range results {
+		if thresholdRelevance(result.Score, retrievalMode) >= *minimum {
+			filtered = append(filtered, result)
+		}
+	}
+
+	return filtered
+}
+
+func thresholdRelevance(score domain.ScoreBreakdown, retrievalMode string) float64 {
+	if score.Exact > 0 {
+		return 1
+	}
+
+	switch retrievalMode {
+	case "substring":
+		return clampScore(score.Substring)
+	case "lexical":
+		return clampScore(score.Lexical)
+	case "semantic":
+		return clampScore(score.Semantic)
+	case "hybrid":
+		return max(
+			clampScore(score.Substring),
+			clampScore(score.Lexical),
+			clampScore(score.Semantic),
+		)
+	default:
+		return 0
+	}
+}
+
+func applySearchDetail(results []domain.SearchResult, detailLevel string) {
+	if detailLevel == domain.SearchDetailFull {
+		return
+	}
+
+	for index := range results {
+		results[index].Content = ""
+		results[index].Metadata = nil
+		results[index].Evidence = nil
+		results[index].DeviceCode = ""
+		results[index].InstallationCode = ""
+		results[index].WorkspaceCode = ""
+		results[index].SourcePath = ""
+		results[index].SourceHash = ""
+		results[index].SourceRange = nil
+	}
+}
+
+func finiteScore(value float64) float64 {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0
+	}
+
+	return value
+}
+
+func clampScore(value float64) float64 {
+	value = finiteScore(value)
+	if value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+
+	return value
 }
 
 func makeSnippet(content, query string, maxRunes int) string {

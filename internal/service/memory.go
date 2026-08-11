@@ -439,7 +439,13 @@ func (s *Store) GetMemory(ctx context.Context, input GetMemoryInput) (domain.Mem
 			input.IncludeDeleted,
 		).Scan(&snapshot)
 		if errorsIsNoRows(err) {
-			return domain.Memory{}, NewError(CodeNotFound, "memory revision not found")
+			return domain.Memory{}, s.memoryNotFoundError(
+				ctx,
+				input.Namespace,
+				input.ID,
+				input.Version,
+				input.IncludeDeleted,
+			)
 		}
 		if err != nil {
 			return domain.Memory{}, WrapError(CodeInternal, "read memory revision", err)
@@ -472,12 +478,70 @@ func (s *Store) GetMemory(ctx context.Context, input GetMemoryInput) (domain.Mem
 		input.IncludeDeleted,
 	))
 	if errorsIsNoRows(err) {
-		return domain.Memory{}, NewError(CodeNotFound, "memory not found")
+		return domain.Memory{}, s.memoryNotFoundError(
+			ctx,
+			input.Namespace,
+			input.ID,
+			nil,
+			input.IncludeDeleted,
+		)
 	}
 	if err != nil {
 		return domain.Memory{}, WrapError(CodeInternal, "read memory", err)
 	}
 	return memory, nil
+}
+
+func (s *Store) memoryNotFoundError(
+	ctx context.Context,
+	namespace string,
+	id string,
+	version *int64,
+	includeDeleted bool,
+) error {
+	message := "memory not found"
+	if version != nil {
+		message = "memory revision not found"
+	}
+	if includeDeleted {
+		return NewError(CodeNotFound, message)
+	}
+
+	var status string
+	var err error
+	if version == nil {
+		err = s.pool.QueryRow(
+			ctx,
+			"SELECT lifecycle_status FROM memories WHERE namespace = $1 AND id = $2",
+			namespace,
+			id,
+		).Scan(&status)
+	} else {
+		err = s.pool.QueryRow(ctx, `
+			SELECT coalesce(after_snapshot->>'lifecycle_status', '')
+			FROM memory_revisions
+			WHERE namespace = $1 AND memory_id = $2 AND to_version = $3
+		`, namespace, id, *version).Scan(&status)
+	}
+	if errorsIsNoRows(err) {
+		return NewError(CodeNotFound, message)
+	}
+	if err != nil {
+		return WrapError(CodeInternal, "inspect hidden memory", err)
+	}
+	if status != domain.StatusDeleted {
+		return NewError(CodeNotFound, message)
+	}
+
+	notFound := NewError(CodeNotFound, message)
+	notFound.Details = map[string]any{
+		"memory_id":        id,
+		"lifecycle_status": domain.StatusDeleted,
+		"include_deleted":  true,
+		"hint":             "retry memory_get with include_deleted=true",
+	}
+
+	return notFound
 }
 
 /**

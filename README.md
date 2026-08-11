@@ -173,7 +173,9 @@ codex mcp list
 
 也可以在 Codex/ChatGPT desktop 的 `/mcp` 面板检查连接。配置字段参考 [OpenAI 官方 MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
 
-## 22 个 MCP tools
+## 23 个 MCP tools
+
+Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_search` 按语义或文本召回，`memory_list` 无 query 浏览过滤结果，`memory_get` 按 ID/version 精确读取。其余 tools 用于 revision、lifecycle、source ingestion 和 device identity 等高级操作。
 
 | Tool | 作用 |
 |---|---|
@@ -181,6 +183,7 @@ codex mcp list
 | `memory_patch` | 使用 `expected_version` 修改 mutable fields，并追加 revision |
 | `memory_get` | 按 ID 读取当前 memory 或指定历史 version |
 | `memory_search` | 执行 exact、substring、lexical、semantic、temporal、metadata 和 hybrid retrieval |
+| `memory_list` | 无需 query，按 scope、type、tag、metadata、lifecycle 和时间过滤浏览 memory |
 | `memory_delete` | soft delete memory，保留 revision history |
 | `memory_history` | 分页读取 append-only revisions |
 | `memory_restore` | 将历史 snapshot 恢复为新的 current version |
@@ -199,6 +202,8 @@ codex mcp list
 | `device_migrate` | 把 source device 合并到 canonical target，同时保留 provenance |
 | `device_whoami` | 查询当前 installation、device、workspace 与 verified caller identity |
 | `memory_health` | 查询 PostgreSQL 与 embedding provider 状态及 server version |
+
+`memory_search` 和 `memory_list` 默认返回 `detail_level=compact`，保留 title、snippet、scope、status、tags 与可解释 score；需要完整 content、metadata、evidence、device identity 和 source provenance 时显式传 `detail_level=full`。`memory_search.min_relevance` 可在 `0..1` 内过滤低相关结果。
 
 默认检索行为是 `scope_mode=prefer_local`，同时排除 expired、refuted、superseded 和 deleted 记录。mutation 应携带 `expected_version`；可能重试的 write 应携带稳定 `idempotency_key`。
 

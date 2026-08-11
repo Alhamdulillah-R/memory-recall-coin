@@ -137,6 +137,8 @@ func (s *Server) dispatch(ctx context.Context, request incomingRPCRequest) (any,
 		return dispatchInput(ctx, request, s.backend.GetMemory)
 	case "memory_search":
 		return dispatchInput(ctx, request, s.backend.SearchMemory)
+	case "memory_list":
+		return dispatchInput(ctx, request, s.listMemory)
 	case "memory_delete":
 		return dispatchInput(ctx, request, s.backend.DeleteMemory)
 	case "memory_history":
@@ -178,6 +180,10 @@ func (s *Server) dispatch(ctx context.Context, request incomingRPCRequest) (any,
 	}
 }
 
+func (s *Server) listMemory(ctx context.Context, input service.ListMemoryInput) (domain.SearchResponse, error) {
+	return s.backend.SearchMemory(ctx, input.SearchInput())
+}
+
 type callerInput interface {
 	setCaller(domain.CallerIdentity)
 }
@@ -209,6 +215,8 @@ func applyCaller(input any, caller domain.CallerIdentity) {
 	case *service.GetMemoryInput:
 		value.Caller = caller
 	case *service.SearchMemoryInput:
+		value.Caller = caller
+	case *service.ListMemoryInput:
 		value.Caller = caller
 	case *service.DeleteMemoryInput:
 		value.Caller = caller
