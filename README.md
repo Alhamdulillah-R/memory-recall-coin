@@ -133,9 +133,11 @@ HTTP surface：
 先让 Codex host process 可以读取中央地址与 token 文件：
 
 ```powershell
-$env:MEMORY_API_URL = 'https://memory-recall-coin.example.ts.net'
+$env:MEMORY_API_URL = 'http://100.119.87.38:8080'
 $env:MEMORY_API_TOKEN_FILE = "$env:LOCALAPPDATA\memory-recall-coin\api-token"
 ```
+
+东京环境把 `Service/memory-recall-coin` 的 `externalIPs` 固定到 master 的 Tailscale IP `100.119.87.38`。链路由 Tailnet WireGuard 加密，HTTP RPC 仍强制 Bearer token；该地址不对公网路由。
 
 在用户级 `config.toml` 或 trusted project 的 `.codex/config.toml` 中配置：
 

@@ -36,7 +36,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: memory-recall-coin
-          image: rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/memory-recall-coin@sha256:d0ae1769bb58994f002ed982ab9339346bb5c3146d378343fbaba3fb54cf3d15
+          image: rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/memory-recall-coin@sha256:1b6d4f91ce34eafec3559744dc4638b1dd01bbddbe59e93766a378f725498148
           imagePullPolicy: IfNotPresent
           args:
             - serve
@@ -124,6 +124,8 @@ metadata:
     app.kubernetes.io/part-of: memory-recall-coin
 spec:
   type: ClusterIP
+  externalIPs:
+    - 100.119.87.38
   selector:
     app.kubernetes.io/name: memory-recall-coin
     app.kubernetes.io/component: server
