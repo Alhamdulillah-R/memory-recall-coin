@@ -357,7 +357,9 @@ func upsertIngestionRoot(ctx context.Context, tx pgx.Tx, input SyncSourcesInput)
         ) VALUES (
             $1, $2, $3, $4, $5, $6,
             $7, $8, $9, $10,
-            $11, $12, $13, $14, 1, $15
+            COALESCE($11::text[], '{}'::text[]),
+            COALESCE($12::text[], '{}'::text[]),
+            $13, $14, 1, $15
         )
         ON CONFLICT (namespace, installation_code, normalized_root_path) DO UPDATE SET
             scope_type = excluded.scope_type, scope_id = excluded.scope_id,
