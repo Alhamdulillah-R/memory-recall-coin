@@ -180,19 +180,19 @@ func (s *Store) semanticCandidates(ctx context.Context, input SearchMemoryInput)
 	if s.embedding == nil || !s.embedding.Enabled() {
 		return nil, NewError(CodeUnavailable, "semantic retrieval is disabled")
 	}
-	vectors, err := s.embedding.Embed(ctx, []string{input.Query})
+	vector, err := s.embedding.EmbedQuery(ctx, input.Query)
 	if err != nil {
 		return nil, WrapError(CodeUnavailable, "generate query embedding", err)
 	}
-	if len(vectors) != 1 || len(vectors[0]) != 1024 {
+	if len(vector) != 1024 {
 		return nil, NewError(CodeInternal, "embedding provider returned an invalid query vector")
 	}
 
-	memoryCandidates, err := s.queryMemorySemantic(ctx, input, pgvector.NewVector(vectors[0]))
+	memoryCandidates, err := s.queryMemorySemantic(ctx, input, pgvector.NewVector(vector))
 	if err != nil {
 		return nil, err
 	}
-	sourceCandidates, err := s.querySourceSemantic(ctx, input, pgvector.NewVector(vectors[0]))
+	sourceCandidates, err := s.querySourceSemantic(ctx, input, pgvector.NewVector(vector))
 	if err != nil {
 		return nil, err
 	}
@@ -320,11 +320,13 @@ func (s *Store) queryMemorySemantic(ctx context.Context, input SearchMemoryInput
 	if err != nil {
 		return nil, err
 	}
+	args = append(args, s.embeddingProviderName)
+	modelPlaceholder := fmt.Sprintf("$%d", len(args))
 	args = append(args, input.CandidateLimit)
 
 	query := `SELECT ` + memorySearchColumns(`1.0 - (m.embedding <=> $1)`) + `
-        FROM memories m
-        WHERE m.embedding IS NOT NULL AND ` + filters + `
+		FROM memories m
+		WHERE m.embedding IS NOT NULL AND m.embedding_model = ` + modelPlaceholder + ` AND ` + filters + `
         ORDER BY m.embedding <=> $1, m.updated_at DESC, m.id
         LIMIT $` + fmt.Sprint(len(args))
 	rows, err := s.pool.Query(ctx, query, args...)
@@ -346,12 +348,14 @@ func (s *Store) querySourceSemantic(ctx context.Context, input SearchMemoryInput
 	if err != nil {
 		return nil, err
 	}
+	args = append(args, s.embeddingProviderName)
+	modelPlaceholder := fmt.Sprintf("$%d", len(args))
 	args = append(args, input.CandidateLimit)
 
 	query := `SELECT ` + sourceSearchColumns(`1.0 - (c.embedding <=> $1)`) + `
-        FROM source_chunks c
-        JOIN sources s ON s.current_content_id = c.content_id
-        WHERE c.embedding IS NOT NULL AND ` + filters + `
+		FROM source_chunks c
+		JOIN sources s ON s.current_content_id = c.content_id
+		WHERE c.embedding IS NOT NULL AND c.embedding_model = ` + modelPlaceholder + ` AND ` + filters + `
         ORDER BY c.embedding <=> $1, s.updated_at DESC, c.id
         LIMIT $` + fmt.Sprint(len(args))
 	rows, err := s.pool.Query(ctx, query, args...)

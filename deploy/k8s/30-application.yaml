@@ -67,9 +67,21 @@ spec:
             - name: MEMORY_DEFAULT_SCOPE
               value: workspace
             - name: MEMORY_EMBEDDING_PROVIDER
-              value: none
+              value: openai
+            - name: MEMORY_EMBEDDING_URL
+              value: http://memory-recall-embedding
+            - name: MEMORY_EMBEDDING_MODEL
+              value: qwen3-embedding-0.6b@97b0c614
+            - name: MEMORY_EMBEDDING_DIMENSIONS
+              value: "1024"
+            - name: MEMORY_EMBEDDING_QUERY_INSTRUCTION
+              value: Given a memory retrieval query, retrieve relevant memories, source passages, and code snippets that answer or semantically match the query.
             - name: MEMORY_EMBEDDING_WORKERS
-              value: "2"
+              value: "1"
+            - name: MEMORY_EMBEDDING_BATCH_SIZE
+              value: "1"
+            - name: MEMORY_REQUEST_TIMEOUT
+              value: 120s
           resources:
             requests:
               cpu: 150m

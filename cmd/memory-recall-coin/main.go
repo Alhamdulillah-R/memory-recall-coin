@@ -91,12 +91,15 @@ func runCentralService(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 	store := service.NewStore(pool, provider, service.StoreConfig{
-		EmbeddingProviderName:  cfg.EmbeddingProvider,
+		EmbeddingProviderName:  embeddingProviderIdentity(cfg),
 		SignalHMACSecret:       cfg.SignalHMACSecret,
 		ChunkCharacters:        cfg.ChunkCharacters,
 		ChunkOverlapCharacters: cfg.ChunkOverlapCharacters,
 		Version:                version,
 	})
+	if err := store.ReconcileEmbeddingJobs(ctx); err != nil {
+		return err
+	}
 
 	workerCtx, stopWorkers := context.WithCancel(ctx)
 	defer stopWorkers()
@@ -110,6 +113,7 @@ func runCentralService(cfg config.Config, logger *slog.Logger) error {
 			logger,
 		)
 	}()
+	go reconcileEmbeddingsAfterRollout(ctx, store, logger)
 
 	httpAPI := api.NewServer(store, api.ServerConfig{
 		Token:        cfg.APIToken,
@@ -151,6 +155,21 @@ func runCentralService(cfg config.Config, logger *slog.Logger) error {
 	}
 
 	return nil
+}
+
+func reconcileEmbeddingsAfterRollout(ctx context.Context, store *service.Store, logger *slog.Logger) {
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-timer.C:
+	}
+
+	if err := store.ReconcileEmbeddingJobs(ctx); err != nil && ctx.Err() == nil {
+		logger.Error("[Error] reconcile embeddings after rollout", "error", err)
+	}
 }
 
 func runLocalMCP(cfg config.Config, logger *slog.Logger) error {
@@ -235,14 +254,23 @@ func createEmbeddingProvider(cfg config.Config) (embedding.Provider, error) {
 		return embedding.NewDisabled(), nil
 	case "openai":
 		return embedding.NewOpenAI(embedding.OpenAIConfig{
-			BaseURL: cfg.EmbeddingURL,
-			APIKey:  cfg.EmbeddingAPIKey,
-			Model:   cfg.EmbeddingModel,
-			Timeout: cfg.RequestTimeout,
+			BaseURL:          cfg.EmbeddingURL,
+			APIKey:           cfg.EmbeddingAPIKey,
+			Model:            cfg.EmbeddingModel,
+			QueryInstruction: cfg.EmbeddingQueryInstruction,
+			Timeout:          cfg.RequestTimeout,
 		})
 	default:
 		return nil, fmt.Errorf("unsupported embedding provider %q", cfg.EmbeddingProvider)
 	}
+}
+
+func embeddingProviderIdentity(cfg config.Config) string {
+	if cfg.EmbeddingProvider == "openai" {
+		return cfg.EmbeddingProvider + ":" + cfg.EmbeddingModel
+	}
+
+	return cfg.EmbeddingProvider
 }
 
 func init() {

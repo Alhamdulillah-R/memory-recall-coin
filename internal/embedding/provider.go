@@ -15,6 +15,7 @@ var ErrDisabled = errors.New("embedding provider is disabled")
 type Provider interface {
 	Enabled() bool
 	Embed(context.Context, []string) ([][]float32, error)
+	EmbedQuery(context.Context, string) ([]float32, error)
 }
 
 // Disabled 是显式关闭 semantic retrieval 时使用的 provider。
@@ -37,6 +38,14 @@ func (*Disabled) Enabled() bool {
  * @return       ErrDisabled
  */
 func (*Disabled) Embed(_ context.Context, _ []string) ([][]float32, error) {
+	return nil, ErrDisabled
+}
+
+/**
+ * EmbedQuery rejects query embedding requests.
+ * @return ErrDisabled
+ */
+func (*Disabled) EmbedQuery(_ context.Context, _ string) ([]float32, error) {
 	return nil, ErrDisabled
 }
 

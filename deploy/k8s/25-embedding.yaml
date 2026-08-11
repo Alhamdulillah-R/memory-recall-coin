@@ -1,0 +1,194 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: memory-recall-embedding-cache
+  namespace: memory-recall-coin
+  labels:
+    app.kubernetes.io/name: memory-recall-embedding
+    app.kubernetes.io/component: embedding
+    app.kubernetes.io/part-of: memory-recall-coin
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-recall-embedding
+  namespace: memory-recall-coin
+  labels:
+    app.kubernetes.io/name: memory-recall-embedding
+    app.kubernetes.io/component: embedding
+    app.kubernetes.io/part-of: memory-recall-coin
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: memory-recall-embedding
+      app.kubernetes.io/component: embedding
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: memory-recall-embedding
+        app.kubernetes.io/component: embedding
+        app.kubernetes.io/part-of: memory-recall-coin
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector:
+        kubernetes.io/hostname: k3s-master
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: text-embeddings-inference
+          image: ghcr.io/huggingface/text-embeddings-inference@sha256:ad950d30878eceb72aaf32024d26fa2b1d04a75304fa0b4776b49aa1941fea07
+          imagePullPolicy: IfNotPresent
+          args:
+            - --model-id
+            - Qwen/Qwen3-Embedding-0.6B
+            - --revision
+            - 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
+            - --served-model-name
+            - qwen3-embedding-0.6b@97b0c614
+            - --dtype
+            - float16
+            - --port
+            - "8080"
+            - --prometheus-port
+            - "9000"
+            - --huggingface-hub-cache
+            - /data
+            - --max-concurrent-requests
+            - "8"
+            - --max-batch-tokens
+            - "2048"
+            - --max-batch-requests
+            - "2"
+            - --max-client-batch-size
+            - "2"
+            - --json-output
+          env:
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 9000
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "2"
+              memory: 3Gi
+            limits:
+              cpu: "4"
+              memory: 5Gi
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: 120
+            periodSeconds: 5
+            timeoutSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: model-cache
+              mountPath: /data
+            - name: runtime
+              mountPath: /tmp
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: memory-recall-embedding-cache
+        - name: runtime
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: memory-recall-embedding
+  namespace: memory-recall-coin
+  labels:
+    app.kubernetes.io/name: memory-recall-embedding
+    app.kubernetes.io/component: embedding
+    app.kubernetes.io/part-of: memory-recall-coin
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: memory-recall-embedding
+    app.kubernetes.io/component: embedding
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+    - name: metrics
+      port: 9000
+      targetPort: metrics
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: memory-recall-embedding
+  namespace: memory-recall-coin
+  labels:
+    app.kubernetes.io/name: memory-recall-embedding
+    app.kubernetes.io/component: embedding
+    app.kubernetes.io/part-of: memory-recall-coin
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: memory-recall-embedding
+      app.kubernetes.io/component: embedding
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: memory-recall-coin
+              app.kubernetes.io/component: server
+      ports:
+        - port: 8080
+          protocol: TCP
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9000
+          protocol: TCP

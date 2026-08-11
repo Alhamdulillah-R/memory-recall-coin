@@ -18,6 +18,7 @@ import (
 type EmbeddingProvider interface {
 	Enabled() bool
 	Embed(context.Context, []string) ([][]float32, error)
+	EmbedQuery(context.Context, string) ([]float32, error)
 }
 
 // Store implements Backend using PostgreSQL as the authoritative state.

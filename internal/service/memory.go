@@ -1113,13 +1113,16 @@ func (s *Store) enqueueMemoryEmbedding(ctx context.Context, tx pgx.Tx, memory do
 
 	contentHash := hashText(memory.Title + "\n" + memory.Content)
 	if _, err := tx.Exec(ctx, `
-        INSERT INTO embedding_jobs(target_type, target_id, namespace, content_hash, status, available_at)
-        VALUES ('memory', $1, $2, $3, 'pending', statement_timestamp())
-        ON CONFLICT (target_type, target_id) DO UPDATE SET
-            content_hash = excluded.content_hash,
-            status = 'pending', attempts = 0, available_at = statement_timestamp(),
-            locked_at = NULL, last_error = NULL, updated_at = statement_timestamp()
-    `, memory.ID, memory.Namespace, contentHash); err != nil {
+		INSERT INTO embedding_jobs(
+			target_type, target_id, namespace, content_hash, embedding_model, status, available_at
+		)
+		VALUES ('memory', $1, $2, $3, $4, 'pending', statement_timestamp())
+		ON CONFLICT (target_type, target_id) DO UPDATE SET
+			namespace = excluded.namespace,
+			content_hash = excluded.content_hash,
+			status = 'pending', attempts = 0, available_at = statement_timestamp(),
+			locked_at = NULL, last_error = NULL, updated_at = statement_timestamp()
+	`, memory.ID, memory.Namespace, contentHash, s.embeddingProviderName); err != nil {
 		return WrapError(CodeInternal, "enqueue memory embedding", err)
 	}
 

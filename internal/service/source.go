@@ -206,14 +206,14 @@ func (s *Store) SourceStatus(ctx context.Context, input SourceStatusInput) (doma
 			sourceIDs = append(sourceIDs, source.ID)
 		}
 		if err := s.pool.QueryRow(ctx, `
-            SELECT
+			SELECT
 				count(DISTINCT j.id) FILTER (WHERE j.status IN ('pending', 'processing')),
 				count(DISTINCT j.id) FILTER (WHERE j.status = 'failed')
-            FROM embedding_jobs j
-            JOIN source_chunks c ON c.id = j.target_id AND j.target_type = 'source_chunk'
-            JOIN sources s ON s.current_content_id = c.content_id
-            WHERE s.id = ANY($1::text[])
-        `, sourceIDs).Scan(&status.PendingEmbeddings, &status.FailedEmbeddings); err != nil {
+			FROM embedding_jobs j
+			JOIN source_chunks c ON c.id = j.target_id AND j.target_type = 'source_chunk'
+			JOIN sources s ON s.current_content_id = c.content_id
+			WHERE s.id = ANY($1::text[]) AND j.embedding_model = $2
+		`, sourceIDs, s.embeddingProviderName).Scan(&status.PendingEmbeddings, &status.FailedEmbeddings); err != nil {
 			return domain.SourceStatus{}, WrapError(CodeInternal, "count source embeddings", err)
 		}
 	}
@@ -451,9 +451,11 @@ func (s *Store) ensureSourceContent(
 		}
 		if s.embedding != nil && s.embedding.Enabled() {
 			if _, err := tx.Exec(ctx, `
-                INSERT INTO embedding_jobs(target_type, target_id, namespace, content_hash)
-                VALUES ('source_chunk', $1, $2, $3)
-            `, chunkID, namespace, chunk.Hash); err != nil {
+				INSERT INTO embedding_jobs(
+					target_type, target_id, namespace, content_hash, embedding_model
+				)
+				VALUES ('source_chunk', $1, $2, $3, $4)
+			`, chunkID, namespace, chunk.Hash, s.embeddingProviderName); err != nil {
 				return "", 0, WrapError(CodeInternal, "enqueue source chunk embedding", err)
 			}
 		}

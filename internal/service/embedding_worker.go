@@ -12,7 +12,7 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
-const maxEmbeddingAttempts = 5
+const maxEmbeddingAttempts = 12
 
 type embeddingJob struct {
 	ID          int64
@@ -20,9 +20,91 @@ type embeddingJob struct {
 	TargetID    string
 	Namespace   string
 	ContentHash string
+	Model       string
 	Attempts    int
 	LockedAt    time.Time
 	Text        string
+}
+
+/**
+ * ReconcileEmbeddingJobs clears vectors from another model and queues every missing current-model vector.
+ * @param ctx service startup context
+ * @return reconciliation error, or nil when embedding is disabled
+ */
+func (s *Store) ReconcileEmbeddingJobs(ctx context.Context) error {
+	if s.embedding == nil || !s.embedding.Enabled() {
+		return nil
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return WrapError(CodeUnavailable, "begin embedding reconciliation", err)
+	}
+	defer rollback(tx)
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE memories SET embedding = NULL, embedding_model = NULL, embedded_at = NULL
+		WHERE embedding IS NOT NULL AND embedding_model IS DISTINCT FROM $1
+	`, s.embeddingProviderName); err != nil {
+		return WrapError(CodeInternal, "clear stale memory embeddings", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE source_chunks SET embedding = NULL, embedding_model = NULL, embedded_at = NULL
+		WHERE embedding IS NOT NULL AND embedding_model IS DISTINCT FROM $1
+	`, s.embeddingProviderName); err != nil {
+		return WrapError(CodeInternal, "clear stale source embeddings", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO embedding_jobs(
+			target_type, target_id, namespace, content_hash, embedding_model, status, available_at
+		)
+		SELECT
+			'memory', id, namespace,
+			encode(digest(title || E'\n' || content, 'sha256'), 'hex'),
+			$1, 'pending', statement_timestamp()
+		FROM memories
+		WHERE lifecycle_status <> 'deleted' AND embedding IS NULL
+		ON CONFLICT (target_type, target_id) DO UPDATE SET
+			namespace = excluded.namespace,
+			content_hash = excluded.content_hash,
+			embedding_model = excluded.embedding_model,
+			status = 'pending', attempts = 0, available_at = statement_timestamp(),
+			locked_at = NULL, last_error = NULL, updated_at = statement_timestamp()
+		WHERE embedding_jobs.embedding_model IS DISTINCT FROM excluded.embedding_model
+		   OR embedding_jobs.content_hash IS DISTINCT FROM excluded.content_hash
+		   OR embedding_jobs.status IN ('completed', 'failed')
+	`, s.embeddingProviderName); err != nil {
+		return WrapError(CodeInternal, "requeue memory embeddings", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO embedding_jobs(
+			target_type, target_id, namespace, content_hash, embedding_model, status, available_at
+		)
+		SELECT DISTINCT
+			'source_chunk', c.id, c.namespace, c.content_hash,
+			$1, 'pending', statement_timestamp()
+		FROM source_chunks c
+		JOIN sources s ON s.current_content_id = c.content_id
+		WHERE s.lifecycle_status <> 'deleted' AND c.embedding IS NULL
+		ON CONFLICT (target_type, target_id) DO UPDATE SET
+			namespace = excluded.namespace,
+			content_hash = excluded.content_hash,
+			embedding_model = excluded.embedding_model,
+			status = 'pending', attempts = 0, available_at = statement_timestamp(),
+			locked_at = NULL, last_error = NULL, updated_at = statement_timestamp()
+		WHERE embedding_jobs.embedding_model IS DISTINCT FROM excluded.embedding_model
+		   OR embedding_jobs.content_hash IS DISTINCT FROM excluded.content_hash
+		   OR embedding_jobs.status IN ('completed', 'failed')
+	`, s.embeddingProviderName); err != nil {
+		return WrapError(CodeInternal, "requeue source embeddings", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return WrapError(CodeInternal, "commit embedding reconciliation", err)
+	}
+
+	return nil
 }
 
 /**
@@ -127,17 +209,17 @@ func (s *Store) claimEmbeddingJobs(ctx context.Context, batchSize int) ([]embedd
 	defer rollback(tx)
 
 	rows, err := tx.Query(ctx, `
-        SELECT id, target_type, target_id, namespace, content_hash, attempts
-        FROM embedding_jobs
-        WHERE (
-            status = 'pending' AND available_at <= statement_timestamp()
-        ) OR (
-            status = 'processing' AND locked_at < statement_timestamp() - interval '5 minutes'
-        )
-        ORDER BY available_at, id
-        FOR UPDATE SKIP LOCKED
-        LIMIT $1
-    `, batchSize)
+		SELECT id, target_type, target_id, namespace, content_hash, embedding_model, attempts
+		FROM embedding_jobs
+		WHERE embedding_model = $2 AND ((
+			status = 'pending' AND available_at <= statement_timestamp()
+		) OR (
+			status = 'processing' AND locked_at < statement_timestamp() - interval '5 minutes'
+		))
+		ORDER BY available_at, id
+		FOR UPDATE SKIP LOCKED
+		LIMIT $1
+	`, batchSize, s.embeddingProviderName)
 	if err != nil {
 		return nil, WrapError(CodeInternal, "select embedding jobs", err)
 	}
@@ -151,6 +233,7 @@ func (s *Store) claimEmbeddingJobs(ctx context.Context, batchSize int) ([]embedd
 			&job.TargetID,
 			&job.Namespace,
 			&job.ContentHash,
+			&job.Model,
 			&job.Attempts,
 		); err != nil {
 			rows.Close()
@@ -178,12 +261,12 @@ func (s *Store) claimEmbeddingJobs(ctx context.Context, batchSize int) ([]embedd
 		}
 		job.Text = text
 		err = tx.QueryRow(ctx, `
-            UPDATE embedding_jobs SET
-                status = 'processing', attempts = attempts + 1,
-                locked_at = statement_timestamp(), updated_at = statement_timestamp()
-            WHERE id = $1
+			UPDATE embedding_jobs SET
+				status = 'processing', attempts = attempts + 1,
+				locked_at = statement_timestamp(), updated_at = statement_timestamp()
+			WHERE id = $1 AND embedding_model = $2
 			RETURNING attempts, locked_at
-		`, job.ID).Scan(&job.Attempts, &job.LockedAt)
+		`, job.ID, job.Model).Scan(&job.Attempts, &job.LockedAt)
 		if err != nil {
 			return nil, WrapError(CodeInternal, "claim embedding job", err)
 		}
@@ -237,9 +320,9 @@ func (s *Store) completeEmbeddingJob(ctx context.Context, job embeddingJob, vect
 		SELECT id
 		FROM embedding_jobs
 		WHERE id = $1 AND status = 'processing' AND content_hash = $2
-		  AND attempts = $3 AND locked_at = $4
+		  AND attempts = $3 AND locked_at = $4 AND embedding_model = $5
 		FOR UPDATE
-	`, job.ID, job.ContentHash, job.Attempts, job.LockedAt).Scan(&ownedJobID)
+	`, job.ID, job.ContentHash, job.Attempts, job.LockedAt, job.Model).Scan(&ownedJobID)
 	if errorsIsNoRows(err) {
 		return nil
 	}
@@ -251,19 +334,21 @@ func (s *Store) completeEmbeddingJob(ctx context.Context, job embeddingJob, vect
 	switch job.TargetType {
 	case "memory":
 		command, err := tx.Exec(ctx, `
-            UPDATE memories SET embedding = $2, embedding_model = $3, embedded_at = statement_timestamp()
+			UPDATE memories SET embedding = $2, embedding_model = $3, embedded_at = statement_timestamp()
 			WHERE id = $1 AND namespace = $5 AND lifecycle_status <> 'deleted'
-              AND encode(digest(title || E'\n' || content, 'sha256'), 'hex') = $4
-		`, job.TargetID, vector, s.embeddingProviderName, job.ContentHash, job.Namespace)
+			  AND encode(digest(title || E'\n' || content, 'sha256'), 'hex') = $4
+			  AND (embedding IS NULL OR embedding_model = $3)
+		`, job.TargetID, vector, job.Model, job.ContentHash, job.Namespace)
 		if err != nil {
 			return WrapError(CodeInternal, "update memory embedding", err)
 		}
 		updated = command.RowsAffected()
 	case "source_chunk":
 		command, err := tx.Exec(ctx, `
-            UPDATE source_chunks SET embedding = $2, embedding_model = $3, embedded_at = statement_timestamp()
+			UPDATE source_chunks SET embedding = $2, embedding_model = $3, embedded_at = statement_timestamp()
 			WHERE id = $1 AND namespace = $5 AND content_hash = $4
-		`, job.TargetID, vector, s.embeddingProviderName, job.ContentHash, job.Namespace)
+			  AND (embedding IS NULL OR embedding_model = $3)
+		`, job.TargetID, vector, job.Model, job.ContentHash, job.Namespace)
 		if err != nil {
 			return WrapError(CodeInternal, "update source chunk embedding", err)
 		}
@@ -277,11 +362,11 @@ func (s *Store) completeEmbeddingJob(ctx context.Context, job embeddingJob, vect
 		}
 	} else {
 		if _, err := tx.Exec(ctx, `
-            UPDATE embedding_jobs SET
-                status = 'completed', locked_at = NULL, last_error = NULL,
-                updated_at = statement_timestamp()
-            WHERE id = $1
-        `, job.ID); err != nil {
+			UPDATE embedding_jobs SET
+				status = 'completed', locked_at = NULL, last_error = NULL,
+				updated_at = statement_timestamp()
+			WHERE id = $1 AND embedding_model = $2
+		`, job.ID, job.Model); err != nil {
 			return WrapError(CodeInternal, "complete embedding job", err)
 		}
 	}
@@ -310,12 +395,12 @@ func (s *Store) failEmbeddingJobs(ctx context.Context, jobs []embeddingJob, fail
 			backoffSeconds = 300
 		}
 		if _, err := tx.Exec(ctx, `
-            UPDATE embedding_jobs SET
-                status = $2, available_at = statement_timestamp() + ($3 * interval '1 second'),
-                locked_at = NULL, last_error = left($4, 2000), updated_at = statement_timestamp()
+			UPDATE embedding_jobs SET
+				status = $2, available_at = statement_timestamp() + ($3 * interval '1 second'),
+				locked_at = NULL, last_error = left($4, 2000), updated_at = statement_timestamp()
 			WHERE id = $1 AND status = 'processing' AND content_hash = $5
-			  AND attempts = $6 AND locked_at = $7
-		`, job.ID, status, int(backoffSeconds), failure.Error(), job.ContentHash, job.Attempts, job.LockedAt); err != nil {
+			  AND attempts = $6 AND locked_at = $7 AND embedding_model = $8
+		`, job.ID, status, int(backoffSeconds), failure.Error(), job.ContentHash, job.Attempts, job.LockedAt, job.Model); err != nil {
 			return WrapError(CodeInternal, "update failed embedding job", err)
 		}
 	}

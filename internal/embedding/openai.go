@@ -20,18 +20,20 @@ const (
 
 // OpenAIConfig 配置 OpenAI-compatible embeddings endpoint。
 type OpenAIConfig struct {
-	BaseURL string
-	APIKey  string
-	Model   string
-	Timeout time.Duration
+	BaseURL          string
+	APIKey           string
+	Model            string
+	QueryInstruction string
+	Timeout          time.Duration
 }
 
 // OpenAI 使用 OpenAI-compatible /v1/embeddings API 生成向量。
 type OpenAI struct {
-	endpoint string
-	apiKey   string
-	model    string
-	client   *http.Client
+	endpoint         string
+	apiKey           string
+	model            string
+	queryInstruction string
+	client           *http.Client
 }
 
 // APIError 描述 embeddings endpoint 返回的非 2xx 响应。
@@ -97,13 +99,37 @@ func NewOpenAI(cfg OpenAIConfig) (*OpenAI, error) {
 	}
 
 	return &OpenAI{
-		endpoint: endpoint,
-		apiKey:   strings.TrimSpace(cfg.APIKey),
-		model:    model,
+		endpoint:         endpoint,
+		apiKey:           strings.TrimSpace(cfg.APIKey),
+		model:            model,
+		queryInstruction: strings.TrimSpace(cfg.QueryInstruction),
 		client: &http.Client{
 			Timeout: cfg.Timeout,
 		},
 	}, nil
+}
+
+/**
+ * EmbedQuery generates one query vector and applies the configured retrieval instruction.
+ * @param ctx   request context
+ * @param query raw search query
+ * @return      one 1024-dimensional vector
+ */
+func (p *OpenAI) EmbedQuery(ctx context.Context, query string) ([]float32, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, errors.New("embedding query is empty")
+	}
+	if p.queryInstruction != "" {
+		query = "Instruct: " + p.queryInstruction + "\nQuery: " + query
+	}
+
+	vectors, err := p.Embed(ctx, []string{query})
+	if err != nil {
+		return nil, err
+	}
+
+	return vectors[0], nil
 }
 
 // Enabled 返回 true，表示该 provider 可以生成 embedding。

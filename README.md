@@ -94,6 +94,7 @@ task --taskfile .\Task.yml build VERSION=v0.1.0 REVISION=0123456789abcdef BUILD_
 | `MEMORY_EMBEDDING_URL` | 无 | OpenAI-compatible base URL；provider 为 `openai` 时必填 |
 | `MEMORY_EMBEDDING_API_KEY` | 无 | 可选 Bearer credential |
 | `MEMORY_EMBEDDING_MODEL` | `text-embedding-3-small` | embedding model |
+| `MEMORY_EMBEDDING_QUERY_INSTRUCTION` | 无 | 可选 query instruction；发送时编码为 `Instruct: <instruction>\nQuery: <query>`，document 不添加 instruction |
 | `MEMORY_EMBEDDING_DIMENSIONS` | `1024` | 固定为 1024，其他值直接拒绝启动 |
 | `MEMORY_EMBEDDING_WORKERS` | `2` | embedding worker 数量 |
 | `MEMORY_EMBEDDING_BATCH_SIZE` | `32` | 单批 input 数量 |
@@ -106,6 +107,8 @@ task --taskfile .\Task.yml build VERSION=v0.1.0 REVISION=0123456789abcdef BUILD_
 | `MEMORY_SHUTDOWN_TIMEOUT` | `15s` | 中央 graceful shutdown timeout |
 
 `MEMORY_EMBEDDING_PROVIDER=none` 时 exact、substring、lexical、metadata 和 temporal channel 仍可用，只有 semantic channel 被关闭。
+
+启用 provider 后，服务会在 worker 和 HTTP listener 启动前幂等 requeue 尚未生成 embedding 或 model identity 不匹配的 memory/source chunk。数据库使用 `openai:<model>` 作为 embedding identity；semantic retrieval 只读取当前 identity 的向量，切换 model 不会混用不同 vector space。
 
 ## 启动中央服务
 

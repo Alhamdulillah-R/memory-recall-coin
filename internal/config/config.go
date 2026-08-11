@@ -15,31 +15,32 @@ const defaultMaxFileBytes = 2 << 20
 
 // Config contains runtime settings shared by the central service and local MCP proxy.
 type Config struct {
-	Mode                   string
-	ListenAddress          string
-	DatabaseURL            string
-	APIToken               string
-	APIURL                 string
-	DefaultNamespace       string
-	DefaultWorkspaceCode   string
-	DefaultScopeType       string
-	IdentityFile           string
-	SignalHMACSecret       string
-	EmbeddingProvider      string
-	EmbeddingURL           string
-	EmbeddingAPIKey        string
-	EmbeddingModel         string
-	EmbeddingDimensions    int
-	EmbeddingWorkers       int
-	EmbeddingBatchSize     int
-	MaxFileBytes           int64
-	MaxRPCBodyBytes        int64
-	ChunkCharacters        int
-	ChunkOverlapCharacters int
-	WatchDebounce          time.Duration
-	AutoRegister           bool
-	RequestTimeout         time.Duration
-	ShutdownTimeout        time.Duration
+	Mode                      string
+	ListenAddress             string
+	DatabaseURL               string
+	APIToken                  string
+	APIURL                    string
+	DefaultNamespace          string
+	DefaultWorkspaceCode      string
+	DefaultScopeType          string
+	IdentityFile              string
+	SignalHMACSecret          string
+	EmbeddingProvider         string
+	EmbeddingURL              string
+	EmbeddingAPIKey           string
+	EmbeddingModel            string
+	EmbeddingQueryInstruction string
+	EmbeddingDimensions       int
+	EmbeddingWorkers          int
+	EmbeddingBatchSize        int
+	MaxFileBytes              int64
+	MaxRPCBodyBytes           int64
+	ChunkCharacters           int
+	ChunkOverlapCharacters    int
+	WatchDebounce             time.Duration
+	AutoRegister              bool
+	RequestTimeout            time.Duration
+	ShutdownTimeout           time.Duration
 }
 
 // WorkspaceConfig contains defaults resolved from a .memory-recall.json file.
@@ -78,31 +79,32 @@ func Load(mode string) (Config, error) {
 	}
 
 	cfg := Config{
-		Mode:                   mode,
-		ListenAddress:          envString("MEMORY_LISTEN_ADDRESS", ":8080"),
-		DatabaseURL:            strings.TrimSpace(os.Getenv("MEMORY_DATABASE_URL")),
-		APIToken:               strings.TrimSpace(os.Getenv("MEMORY_API_TOKEN")),
-		APIURL:                 strings.TrimRight(strings.TrimSpace(os.Getenv("MEMORY_API_URL")), "/"),
-		DefaultNamespace:       envString("MEMORY_DEFAULT_NAMESPACE", workspace.Namespace),
-		DefaultWorkspaceCode:   envString("MEMORY_WORKSPACE_CODE", workspace.WorkspaceCode),
-		DefaultScopeType:       envString("MEMORY_DEFAULT_SCOPE", workspace.ScopeType),
-		IdentityFile:           envString("MEMORY_IDENTITY_FILE", identityFile),
-		SignalHMACSecret:       strings.TrimSpace(os.Getenv("MEMORY_SIGNAL_HMAC_SECRET")),
-		EmbeddingProvider:      strings.ToLower(envString("MEMORY_EMBEDDING_PROVIDER", "none")),
-		EmbeddingURL:           strings.TrimRight(strings.TrimSpace(os.Getenv("MEMORY_EMBEDDING_URL")), "/"),
-		EmbeddingAPIKey:        strings.TrimSpace(os.Getenv("MEMORY_EMBEDDING_API_KEY")),
-		EmbeddingModel:         envString("MEMORY_EMBEDDING_MODEL", "text-embedding-3-small"),
-		EmbeddingDimensions:    envInt("MEMORY_EMBEDDING_DIMENSIONS", 1024),
-		EmbeddingWorkers:       envInt("MEMORY_EMBEDDING_WORKERS", 2),
-		EmbeddingBatchSize:     envInt("MEMORY_EMBEDDING_BATCH_SIZE", 32),
-		MaxFileBytes:           envInt64("MEMORY_MAX_FILE_BYTES", defaultMaxFileBytes),
-		MaxRPCBodyBytes:        envInt64("MEMORY_MAX_RPC_BODY_BYTES", 32<<20),
-		ChunkCharacters:        envInt("MEMORY_CHUNK_CHARACTERS", 1800),
-		ChunkOverlapCharacters: envInt("MEMORY_CHUNK_OVERLAP_CHARACTERS", 200),
-		WatchDebounce:          envDuration("MEMORY_WATCH_DEBOUNCE", 750*time.Millisecond),
-		AutoRegister:           envBool("MEMORY_AUTO_REGISTER", true),
-		RequestTimeout:         envDuration("MEMORY_REQUEST_TIMEOUT", 30*time.Second),
-		ShutdownTimeout:        envDuration("MEMORY_SHUTDOWN_TIMEOUT", 15*time.Second),
+		Mode:                      mode,
+		ListenAddress:             envString("MEMORY_LISTEN_ADDRESS", ":8080"),
+		DatabaseURL:               strings.TrimSpace(os.Getenv("MEMORY_DATABASE_URL")),
+		APIToken:                  strings.TrimSpace(os.Getenv("MEMORY_API_TOKEN")),
+		APIURL:                    strings.TrimRight(strings.TrimSpace(os.Getenv("MEMORY_API_URL")), "/"),
+		DefaultNamespace:          envString("MEMORY_DEFAULT_NAMESPACE", workspace.Namespace),
+		DefaultWorkspaceCode:      envString("MEMORY_WORKSPACE_CODE", workspace.WorkspaceCode),
+		DefaultScopeType:          envString("MEMORY_DEFAULT_SCOPE", workspace.ScopeType),
+		IdentityFile:              envString("MEMORY_IDENTITY_FILE", identityFile),
+		SignalHMACSecret:          strings.TrimSpace(os.Getenv("MEMORY_SIGNAL_HMAC_SECRET")),
+		EmbeddingProvider:         strings.ToLower(envString("MEMORY_EMBEDDING_PROVIDER", "none")),
+		EmbeddingURL:              strings.TrimRight(strings.TrimSpace(os.Getenv("MEMORY_EMBEDDING_URL")), "/"),
+		EmbeddingAPIKey:           strings.TrimSpace(os.Getenv("MEMORY_EMBEDDING_API_KEY")),
+		EmbeddingModel:            envString("MEMORY_EMBEDDING_MODEL", "text-embedding-3-small"),
+		EmbeddingQueryInstruction: strings.TrimSpace(os.Getenv("MEMORY_EMBEDDING_QUERY_INSTRUCTION")),
+		EmbeddingDimensions:       envInt("MEMORY_EMBEDDING_DIMENSIONS", 1024),
+		EmbeddingWorkers:          envInt("MEMORY_EMBEDDING_WORKERS", 2),
+		EmbeddingBatchSize:        envInt("MEMORY_EMBEDDING_BATCH_SIZE", 32),
+		MaxFileBytes:              envInt64("MEMORY_MAX_FILE_BYTES", defaultMaxFileBytes),
+		MaxRPCBodyBytes:           envInt64("MEMORY_MAX_RPC_BODY_BYTES", 32<<20),
+		ChunkCharacters:           envInt("MEMORY_CHUNK_CHARACTERS", 1800),
+		ChunkOverlapCharacters:    envInt("MEMORY_CHUNK_OVERLAP_CHARACTERS", 200),
+		WatchDebounce:             envDuration("MEMORY_WATCH_DEBOUNCE", 750*time.Millisecond),
+		AutoRegister:              envBool("MEMORY_AUTO_REGISTER", true),
+		RequestTimeout:            envDuration("MEMORY_REQUEST_TIMEOUT", 30*time.Second),
+		ShutdownTimeout:           envDuration("MEMORY_SHUTDOWN_TIMEOUT", 15*time.Second),
 	}
 	if cfg.APIToken == "" && (mode == "serve" || mode == "mcp") {
 		cfg.APIToken, err = readSecretFile("MEMORY_API_TOKEN_FILE")

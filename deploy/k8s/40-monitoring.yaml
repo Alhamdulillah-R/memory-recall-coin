@@ -18,6 +18,26 @@ spec:
       cnpg.io/cluster: memory-recall-db
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  name: memory-recall-embedding
+  namespace: memory-recall-coin
+  labels:
+    app.kubernetes.io/name: memory-recall-embedding
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: memory-recall-coin
+spec:
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: memory-recall-embedding
+      app.kubernetes.io/component: embedding
+---
+apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
 metadata:
   name: memory-recall-coin
@@ -89,3 +109,21 @@ spec:
             notify: email
           annotations:
             summary: memory-recall-coin has no available replica
+        - alert: MemoryRecallEmbeddingUnavailable
+          expr: |
+            kube_deployment_status_replicas_available{
+              namespace="memory-recall-coin",
+              deployment="memory-recall-embedding"
+            } < 1
+            or absent(
+              kube_deployment_status_replicas_available{
+                namespace="memory-recall-coin",
+                deployment="memory-recall-embedding"
+              }
+            )
+          for: 5m
+          labels:
+            severity: critical
+            notify: email
+          annotations:
+            summary: memory-recall embedding service has no available replica
