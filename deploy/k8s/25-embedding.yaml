@@ -64,17 +64,15 @@ spec:
             - --served-model-name
             - qwen3-embedding-0.6b@97b0c614
             - --dtype
-            - float16
+            - float32
             - --port
             - "8080"
-            - --prometheus-port
-            - "9000"
             - --huggingface-hub-cache
             - /data
             - --max-concurrent-requests
             - "8"
             - --max-batch-tokens
-            - "2048"
+            - "1024"
             - --max-batch-requests
             - "2"
             - --max-client-batch-size
@@ -86,9 +84,6 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-              protocol: TCP
-            - name: metrics
-              containerPort: 9000
               protocol: TCP
           resources:
             requests:
@@ -155,10 +150,6 @@ spec:
       port: 80
       targetPort: http
       protocol: TCP
-    - name: metrics
-      port: 9000
-      targetPort: metrics
-      protocol: TCP
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -190,5 +181,5 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: monitoring
       ports:
-        - port: 9000
+        - port: 8080
           protocol: TCP

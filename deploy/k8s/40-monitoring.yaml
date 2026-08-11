@@ -28,7 +28,7 @@ metadata:
     app.kubernetes.io/part-of: memory-recall-coin
 spec:
   podMetricsEndpoints:
-    - port: metrics
+    - port: http
       path: /metrics
       interval: 30s
       scrapeTimeout: 10s
