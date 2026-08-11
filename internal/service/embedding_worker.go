@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/pgvector/pgvector-go"
+
+	"github.com/Alhamdulillah-R/memory-recall-coin/internal/embedding"
 )
 
 const maxEmbeddingAttempts = 12
@@ -186,8 +188,13 @@ func (s *Store) runEmbeddingWorker(ctx context.Context, workerID, batchSize int,
 		}
 
 		for index, job := range jobs {
-			if len(vectors[index]) != 1024 {
-				err := fmt.Errorf("embedding vector for job %d has %d dimensions", job.ID, len(vectors[index]))
+			if len(vectors[index]) != embedding.Dimensions {
+				err := fmt.Errorf(
+					"embedding vector for job %d has %d dimensions, expected %d",
+					job.ID,
+					len(vectors[index]),
+					embedding.Dimensions,
+				)
 				if markErr := s.failEmbeddingJobs(ctx, []embeddingJob{job}, err); markErr != nil {
 					logger.Error("[Error] record invalid embedding", "worker", workerID, "job_id", job.ID, "error", markErr)
 				}

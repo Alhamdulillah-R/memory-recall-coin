@@ -257,6 +257,8 @@ func createEmbeddingProvider(cfg config.Config) (embedding.Provider, error) {
 			BaseURL:          cfg.EmbeddingURL,
 			APIKey:           cfg.EmbeddingAPIKey,
 			Model:            cfg.EmbeddingModel,
+			Dimensions:       cfg.EmbeddingDimensions,
+			QueryPrefix:      cfg.EmbeddingQueryPrefix,
 			QueryInstruction: cfg.EmbeddingQueryInstruction,
 			Timeout:          cfg.RequestTimeout,
 		})

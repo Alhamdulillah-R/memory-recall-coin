@@ -58,25 +58,27 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - --model-id
-            - Qwen/Qwen3-Embedding-0.6B
+            - BAAI/bge-small-zh-v1.5
             - --revision
-            - 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
+            - 7999e1d3359715c523056ef9478215996d62a620
             - --served-model-name
-            - qwen3-embedding-0.6b@97b0c614
+            - bge-small-zh-v1.5@7999e1d
             - --dtype
             - float32
+            - --hostname
+            - 0.0.0.0
             - --port
             - "8080"
             - --huggingface-hub-cache
             - /data
             - --max-concurrent-requests
-            - "8"
+            - "16"
             - --max-batch-tokens
-            - "1024"
+            - "512"
             - --max-batch-requests
             - "2"
             - --max-client-batch-size
-            - "2"
+            - "8"
             - --json-output
           env:
             - name: HF_HUB_DISABLE_TELEMETRY
@@ -87,11 +89,11 @@ spec:
               protocol: TCP
           resources:
             requests:
-              cpu: "2"
-              memory: 3Gi
+              cpu: 500m
+              memory: 512Mi
             limits:
-              cpu: "4"
-              memory: 5Gi
+              cpu: "2"
+              memory: 1Gi
           startupProbe:
             httpGet:
               path: /health

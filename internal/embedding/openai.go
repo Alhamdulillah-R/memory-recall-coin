@@ -23,6 +23,8 @@ type OpenAIConfig struct {
 	BaseURL          string
 	APIKey           string
 	Model            string
+	Dimensions       int
+	QueryPrefix      string
 	QueryInstruction string
 	Timeout          time.Duration
 }
@@ -32,6 +34,8 @@ type OpenAI struct {
 	endpoint         string
 	apiKey           string
 	model            string
+	dimensions       int
+	queryPrefix      string
 	queryInstruction string
 	client           *http.Client
 }
@@ -80,7 +84,7 @@ type errorEnvelope struct {
 }
 
 /**
- * NewOpenAI 创建固定输出 1024 维向量的 OpenAI-compatible provider。
+ * NewOpenAI 创建固定输出维度的 OpenAI-compatible provider。
  * @param cfg endpoint、认证、model 与 timeout 配置
  * @return    provider 或配置错误
  */
@@ -94,15 +98,25 @@ func NewOpenAI(cfg OpenAIConfig) (*OpenAI, error) {
 	if model == "" {
 		return nil, errors.New("embedding model is required")
 	}
+	if cfg.Dimensions != Dimensions {
+		return nil, fmt.Errorf("embedding dimensions must be %d, got %d", Dimensions, cfg.Dimensions)
+	}
 	if cfg.Timeout <= 0 {
 		return nil, errors.New("embedding timeout must be positive")
+	}
+	queryPrefix := strings.TrimSpace(cfg.QueryPrefix)
+	queryInstruction := strings.TrimSpace(cfg.QueryInstruction)
+	if queryPrefix != "" && queryInstruction != "" {
+		return nil, errors.New("embedding query prefix and instruction are mutually exclusive")
 	}
 
 	return &OpenAI{
 		endpoint:         endpoint,
 		apiKey:           strings.TrimSpace(cfg.APIKey),
 		model:            model,
-		queryInstruction: strings.TrimSpace(cfg.QueryInstruction),
+		dimensions:       cfg.Dimensions,
+		queryPrefix:      queryPrefix,
+		queryInstruction: queryInstruction,
 		client: &http.Client{
 			Timeout: cfg.Timeout,
 		},
@@ -113,14 +127,16 @@ func NewOpenAI(cfg OpenAIConfig) (*OpenAI, error) {
  * EmbedQuery generates one query vector and applies the configured retrieval instruction.
  * @param ctx   request context
  * @param query raw search query
- * @return      one 1024-dimensional vector
+ * @return      one vector using the configured fixed dimensions
  */
 func (p *OpenAI) EmbedQuery(ctx context.Context, query string) ([]float32, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, errors.New("embedding query is empty")
 	}
-	if p.queryInstruction != "" {
+	if p.queryPrefix != "" {
+		query = p.queryPrefix + query
+	} else if p.queryInstruction != "" {
 		query = "Instruct: " + p.queryInstruction + "\nQuery: " + query
 	}
 
@@ -141,7 +157,7 @@ func (*OpenAI) Enabled() bool {
  * Embed 批量生成 embedding，并按 response index 恢复 input 顺序。
  * @param ctx    控制请求取消与 deadline
  * @param inputs 待处理文本，空 batch 不发起 HTTP 请求
- * @return       与 inputs 等长且每项严格为 1024 维的向量
+ * @return       与 inputs 等长且每项符合固定维度的向量
  */
 func (p *OpenAI) Embed(ctx context.Context, inputs []string) ([][]float32, error) {
 	if len(inputs) == 0 {
@@ -156,7 +172,7 @@ func (p *OpenAI) Embed(ctx context.Context, inputs []string) ([][]float32, error
 	payload := embeddingRequest{
 		Input:          inputs,
 		Model:          p.model,
-		Dimensions:     Dimensions,
+		Dimensions:     p.dimensions,
 		EncodingFormat: "float",
 	}
 	body, err := json.Marshal(payload)
@@ -200,7 +216,7 @@ func (p *OpenAI) Embed(ctx context.Context, inputs []string) ([][]float32, error
 		return nil, fmt.Errorf("decode embedding response: %w", err)
 	}
 
-	return validateResponse(result, len(inputs))
+	return validateResponse(result, len(inputs), p.dimensions)
 }
 
 /**
@@ -285,9 +301,10 @@ func parseAPIError(response *http.Response, body []byte, truncated bool) *APIErr
  * validateResponse 验证数量、index 唯一性与固定维度，并重排向量。
  * @param response      provider response
  * @param expectedCount input 数量
+ * @param dimensions    expected vector dimensions
  * @return              按 input 顺序排列的向量或错误
  */
-func validateResponse(response embeddingResponse, expectedCount int) ([][]float32, error) {
+func validateResponse(response embeddingResponse, expectedCount, dimensions int) ([][]float32, error) {
 	if len(response.Data) != expectedCount {
 		return nil, fmt.Errorf(
 			"embedding response count mismatch: expected %d, got %d",
@@ -305,12 +322,12 @@ func validateResponse(response embeddingResponse, expectedCount int) ([][]float3
 		if seen[item.Index] {
 			return nil, fmt.Errorf("embedding response contains duplicate index %d", item.Index)
 		}
-		if len(item.Embedding) != Dimensions {
+		if len(item.Embedding) != dimensions {
 			return nil, fmt.Errorf(
 				"embedding at index %d has %d dimensions, expected %d",
 				item.Index,
 				len(item.Embedding),
-				Dimensions,
+				dimensions,
 			)
 		}
 

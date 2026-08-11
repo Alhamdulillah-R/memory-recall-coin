@@ -23,9 +23,13 @@ kubectl apply --server-side -f .\deploy\k8s\30-application.yaml
 
 ## Embedding
 
-`25-embedding.yaml` 在 `k3s-master` 上运行单副本 Hugging Face Text Embeddings Inference 1.9.3 CPU server。模型固定为 Apache-2.0 的 `Qwen/Qwen3-Embedding-0.6B` revision `97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3`，输出 1024 维向量，通过 cluster-internal `/v1/embeddings` 提供 OpenAI-compatible API。NetworkPolicy 只允许应用 Pod 调用 inference port，并允许 `monitoring` namespace 采集 metrics。
+`25-embedding.yaml` 在 `k3s-master` 上运行单副本 Hugging Face Text Embeddings Inference 1.9.3 CPU server。模型固定为 `BAAI/bge-small-zh-v1.5` revision `7999e1d3359715c523056ef9478215996d62a620`，served model name 为 `bge-small-zh-v1.5@7999e1d`，输出 512 维向量，通过 cluster-internal `/v1/embeddings` 提供 OpenAI-compatible API。应用只给 query 添加官方中文 retrieval prefix，document 保持原文。NetworkPolicy 只允许应用 Pod 调用 inference port，并允许 `monitoring` namespace 采集 metrics。
 
 模型 cache 使用 5Gi `local-path` PVC。它只是可重新下载的 cache，不属于业务数据；应用不可将其当成 backup。TEI image 和 model revision 都必须 immutable pin，升级模型时必须同步触发全量 embedding requeue，禁止在同一 vector space 混用不同模型。
+
+`006_embedding_dimensions_512.sql` 会清空旧 embedding jobs 和 1024 维向量、把两列改为 `vector(512)`，再重建 HNSW index。升级时必须先把应用缩容到 `0`，再使用新 binary 执行 migration；禁止让旧 1024 维 binary 与迁移后的 schema 并存。新应用启动时会按 `openai:bge-small-zh-v1.5@7999e1d` identity 自动 requeue 当前 memory 和 source chunk。
+
+source chunker version 2 使用 448 characters 和 64 characters overlap。升级后需要重新同步现有 ingestion roots，same-hash source 才会切换 `current_content_id` 并使用 version 2 chunks。
 
 ## 存储边界
 

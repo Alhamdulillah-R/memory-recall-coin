@@ -6,7 +6,7 @@ import (
 )
 
 // Dimensions 是数据库与 provider 共同使用的固定 embedding 维度。
-const Dimensions = 1024
+const Dimensions = 512
 
 // ErrDisabled 表示 semantic retrieval 已显式关闭。
 var ErrDisabled = errors.New("embedding provider is disabled")

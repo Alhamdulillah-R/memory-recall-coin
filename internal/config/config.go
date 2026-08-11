@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Alhamdulillah-R/memory-recall-coin/internal/embedding"
 )
 
 const defaultMaxFileBytes = 2 << 20
@@ -29,6 +31,7 @@ type Config struct {
 	EmbeddingURL              string
 	EmbeddingAPIKey           string
 	EmbeddingModel            string
+	EmbeddingQueryPrefix      string
 	EmbeddingQueryInstruction string
 	EmbeddingDimensions       int
 	EmbeddingWorkers          int
@@ -93,14 +96,15 @@ func Load(mode string) (Config, error) {
 		EmbeddingURL:              strings.TrimRight(strings.TrimSpace(os.Getenv("MEMORY_EMBEDDING_URL")), "/"),
 		EmbeddingAPIKey:           strings.TrimSpace(os.Getenv("MEMORY_EMBEDDING_API_KEY")),
 		EmbeddingModel:            envString("MEMORY_EMBEDDING_MODEL", "text-embedding-3-small"),
+		EmbeddingQueryPrefix:      strings.TrimSpace(os.Getenv("MEMORY_EMBEDDING_QUERY_PREFIX")),
 		EmbeddingQueryInstruction: strings.TrimSpace(os.Getenv("MEMORY_EMBEDDING_QUERY_INSTRUCTION")),
-		EmbeddingDimensions:       envInt("MEMORY_EMBEDDING_DIMENSIONS", 1024),
+		EmbeddingDimensions:       envInt("MEMORY_EMBEDDING_DIMENSIONS", embedding.Dimensions),
 		EmbeddingWorkers:          envInt("MEMORY_EMBEDDING_WORKERS", 2),
 		EmbeddingBatchSize:        envInt("MEMORY_EMBEDDING_BATCH_SIZE", 32),
 		MaxFileBytes:              envInt64("MEMORY_MAX_FILE_BYTES", defaultMaxFileBytes),
 		MaxRPCBodyBytes:           envInt64("MEMORY_MAX_RPC_BODY_BYTES", 32<<20),
-		ChunkCharacters:           envInt("MEMORY_CHUNK_CHARACTERS", 1800),
-		ChunkOverlapCharacters:    envInt("MEMORY_CHUNK_OVERLAP_CHARACTERS", 200),
+		ChunkCharacters:           envInt("MEMORY_CHUNK_CHARACTERS", 448),
+		ChunkOverlapCharacters:    envInt("MEMORY_CHUNK_OVERLAP_CHARACTERS", 64),
 		WatchDebounce:             envDuration("MEMORY_WATCH_DEBOUNCE", 750*time.Millisecond),
 		AutoRegister:              envBool("MEMORY_AUTO_REGISTER", true),
 		RequestTimeout:            envDuration("MEMORY_REQUEST_TIMEOUT", 30*time.Second),
@@ -176,8 +180,15 @@ func (c Config) Validate() error {
 		return fmt.Errorf("unsupported mode %q", c.Mode)
 	}
 
-	if c.EmbeddingDimensions != 1024 {
-		return fmt.Errorf("MEMORY_EMBEDDING_DIMENSIONS must be 1024, got %d", c.EmbeddingDimensions)
+	if c.EmbeddingDimensions != embedding.Dimensions {
+		return fmt.Errorf(
+			"MEMORY_EMBEDDING_DIMENSIONS must be %d, got %d",
+			embedding.Dimensions,
+			c.EmbeddingDimensions,
+		)
+	}
+	if c.EmbeddingQueryPrefix != "" && c.EmbeddingQueryInstruction != "" {
+		return errors.New("MEMORY_EMBEDDING_QUERY_PREFIX and MEMORY_EMBEDDING_QUERY_INSTRUCTION are mutually exclusive")
 	}
 	if c.ChunkCharacters < 256 {
 		return errors.New("MEMORY_CHUNK_CHARACTERS must be at least 256")

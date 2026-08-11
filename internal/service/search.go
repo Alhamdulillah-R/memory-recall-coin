@@ -13,6 +13,7 @@ import (
 	"github.com/pgvector/pgvector-go"
 
 	"github.com/Alhamdulillah-R/memory-recall-coin/internal/domain"
+	"github.com/Alhamdulillah-R/memory-recall-coin/internal/embedding"
 )
 
 const rrfConstant = 60.0
@@ -184,7 +185,7 @@ func (s *Store) semanticCandidates(ctx context.Context, input SearchMemoryInput)
 	if err != nil {
 		return nil, WrapError(CodeUnavailable, "generate query embedding", err)
 	}
-	if len(vector) != 1024 {
+	if len(vector) != embedding.Dimensions {
 		return nil, NewError(CodeInternal, "embedding provider returned an invalid query vector")
 	}
 

@@ -5,7 +5,7 @@
 ## 核心能力
 
 - PostgreSQL 是唯一 authoritative store，不扫描大型 Markdown 完成查询。
-- `pgvector` 提供 1024 维 semantic retrieval；`pg_trgm`、PostgreSQL FTS、JSONB GIN 和时间索引分别处理 substring、lexical、metadata 与 temporal retrieval。
+- `pgvector` 提供 512 维 semantic retrieval；`pg_trgm`、PostgreSQL FTS、JSONB GIN 和时间索引分别处理 substring、lexical、metadata 与 temporal retrieval。
 - exact、substring、lexical、semantic 候选通过 hybrid ranking 融合，并返回可检查的 score breakdown。
 - memory mutation 使用 optimistic concurrency；旧版本追加到 immutable revision history。
 - memory、source 和 ingestion 支持 TTL；正常查询直接过滤过期记录，不等待后台 GC。
@@ -94,21 +94,26 @@ task --taskfile .\Task.yml build VERSION=v0.1.0 REVISION=0123456789abcdef BUILD_
 | `MEMORY_EMBEDDING_URL` | 无 | OpenAI-compatible base URL；provider 为 `openai` 时必填 |
 | `MEMORY_EMBEDDING_API_KEY` | 无 | 可选 Bearer credential |
 | `MEMORY_EMBEDDING_MODEL` | `text-embedding-3-small` | embedding model |
-| `MEMORY_EMBEDDING_QUERY_INSTRUCTION` | 无 | 可选 query instruction；发送时编码为 `Instruct: <instruction>\nQuery: <query>`，document 不添加 instruction |
-| `MEMORY_EMBEDDING_DIMENSIONS` | `1024` | 固定为 1024，其他值直接拒绝启动 |
+| `MEMORY_EMBEDDING_QUERY_PREFIX` | 无 | 可选 query prefix；发送时直接编码为 `<prefix><query>`，document 不添加 prefix |
+| `MEMORY_EMBEDDING_QUERY_INSTRUCTION` | 无 | 兼容 Qwen 风格 query instruction；发送时编码为 `Instruct: <instruction>\nQuery: <query>`，document 不添加 instruction |
+| `MEMORY_EMBEDDING_DIMENSIONS` | `512` | 固定为 512，其他值直接拒绝启动 |
 | `MEMORY_EMBEDDING_WORKERS` | `2` | embedding worker 数量 |
 | `MEMORY_EMBEDDING_BATCH_SIZE` | `32` | 单批 input 数量 |
 | `MEMORY_MAX_FILE_BYTES` | `2097152` | 本机单文件读取上限 |
 | `MEMORY_MAX_RPC_BODY_BYTES` | `33554432` | `/v1/rpc` body 上限 |
-| `MEMORY_CHUNK_CHARACTERS` | `1800` | source chunk 字符数 |
-| `MEMORY_CHUNK_OVERLAP_CHARACTERS` | `200` | chunk overlap 字符数 |
+| `MEMORY_CHUNK_CHARACTERS` | `448` | source chunk 字符数 |
+| `MEMORY_CHUNK_OVERLAP_CHARACTERS` | `64` | chunk overlap 字符数 |
 | `MEMORY_WATCH_DEBOUNCE` | `750ms` | filesystem watch debounce |
 | `MEMORY_REQUEST_TIMEOUT` | `30s` | 本地 HTTP 与 embedding request timeout |
 | `MEMORY_SHUTDOWN_TIMEOUT` | `15s` | 中央 graceful shutdown timeout |
 
 `MEMORY_EMBEDDING_PROVIDER=none` 时 exact、substring、lexical、metadata 和 temporal channel 仍可用，只有 semantic channel 被关闭。
 
+`MEMORY_EMBEDDING_QUERY_PREFIX` 与 `MEMORY_EMBEDDING_QUERY_INSTRUCTION` 互斥，同时配置会拒绝启动。BGE 使用前者；后者只用于需要 `Instruct: ...\nQuery: ...` 格式的兼容 provider。
+
 启用 provider 后，服务会在 worker 和 HTTP listener 启动前幂等 requeue 尚未生成 embedding 或 model identity 不匹配的 memory/source chunk。数据库使用 `openai:<model>` 作为 embedding identity；semantic retrieval 只读取当前 identity 的向量，切换 model 不会混用不同 vector space。
+
+source chunker 当前版本为 `2`。从旧版本升级后，需要重新执行一次原 ingestion root 的同步，使 content hash 未变化的 source 也切换到 version 2 chunks。
 
 ## 启动中央服务
 

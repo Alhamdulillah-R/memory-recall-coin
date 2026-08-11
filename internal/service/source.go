@@ -13,6 +13,11 @@ import (
 	"github.com/Alhamdulillah-R/memory-recall-coin/internal/domain"
 )
 
+const (
+	sourceParserVersion  = 1
+	sourceChunkerVersion = 2
+)
+
 type sourceState struct {
 	ID          string
 	ContentID   string
@@ -95,7 +100,7 @@ func (s *Store) SyncSources(ctx context.Context, input SyncSourcesInput) (domain
 			summary.Chunks += chunkCount
 			continue
 		}
-		if state.ContentHash == file.ContentHash {
+		if state.ContentHash == file.ContentHash && state.ContentID == contentID {
 			if err := refreshUnchangedSource(ctx, tx, state.ID, rootID, normalized, file); err != nil {
 				return domain.IngestionSummary{}, err
 			}
@@ -405,18 +410,33 @@ func (s *Store) ensureSourceContent(
 	err := tx.QueryRow(ctx, `
         INSERT INTO source_contents(
             id, namespace, content_hash, parser, parser_version, chunker_version, content, size
-        ) VALUES ($1, $2, $3, $4, 1, 1, $5, $6)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (namespace, content_hash, parser, parser_version, chunker_version) DO NOTHING
         RETURNING id
-    `, contentID, namespace, file.ContentHash, file.Parser, file.Content, file.Size).Scan(&insertedID)
+    `,
+		contentID,
+		namespace,
+		file.ContentHash,
+		file.Parser,
+		sourceParserVersion,
+		sourceChunkerVersion,
+		file.Content,
+		file.Size,
+	).Scan(&insertedID)
 	newContent := true
 	if errorsIsNoRows(err) {
 		newContent = false
 		err = tx.QueryRow(ctx, `
             SELECT id FROM source_contents
             WHERE namespace = $1 AND content_hash = $2 AND parser = $3
-              AND parser_version = 1 AND chunker_version = 1
-        `, namespace, file.ContentHash, file.Parser).Scan(&contentID)
+              AND parser_version = $4 AND chunker_version = $5
+        `,
+			namespace,
+			file.ContentHash,
+			file.Parser,
+			sourceParserVersion,
+			sourceChunkerVersion,
+		).Scan(&contentID)
 	} else if err == nil {
 		contentID = insertedID
 	}

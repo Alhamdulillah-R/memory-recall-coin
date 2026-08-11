@@ -71,17 +71,21 @@ spec:
             - name: MEMORY_EMBEDDING_URL
               value: http://memory-recall-embedding
             - name: MEMORY_EMBEDDING_MODEL
-              value: qwen3-embedding-0.6b@97b0c614
+              value: bge-small-zh-v1.5@7999e1d
             - name: MEMORY_EMBEDDING_DIMENSIONS
-              value: "1024"
-            - name: MEMORY_EMBEDDING_QUERY_INSTRUCTION
-              value: Given a memory retrieval query, retrieve relevant memories, source passages, and code snippets that answer or semantically match the query.
+              value: "512"
+            - name: MEMORY_EMBEDDING_QUERY_PREFIX
+              value: "为这个句子生成表示以用于检索相关文章："
             - name: MEMORY_EMBEDDING_WORKERS
-              value: "1"
+              value: "2"
             - name: MEMORY_EMBEDDING_BATCH_SIZE
-              value: "1"
+              value: "8"
+            - name: MEMORY_CHUNK_CHARACTERS
+              value: "448"
+            - name: MEMORY_CHUNK_OVERLAP_CHARACTERS
+              value: "64"
             - name: MEMORY_REQUEST_TIMEOUT
-              value: 120s
+              value: 30s
           resources:
             requests:
               cpu: 150m
