@@ -162,7 +162,13 @@ func (s *Store) RegisterDevice(ctx context.Context, input RegisterDeviceInput) (
 	if _, err := tx.Exec(ctx, `
         INSERT INTO device_audit(
             installation_code, target_device_code, operation, actor, details
-        ) VALUES ($1, $2, 'register', $3, jsonb_build_object('match_score', $4, 'claim_required', $5))
+        ) VALUES (
+            $1,
+            $2,
+            'register',
+            $3,
+            jsonb_build_object('match_score', $4::integer, 'claim_required', $5::boolean)
+        )
     `, installation.InstallationCode, selectedDevice, actor, selectedScore, claimRequired); err != nil {
 		return domain.RegistrationResult{}, WrapError(CodeInternal, "audit device registration", err)
 	}
@@ -242,8 +248,8 @@ func (s *Store) ClaimDevice(ctx context.Context, input ClaimDeviceInput) (WhoAmI
 	if _, err := tx.Exec(ctx, `
         INSERT INTO device_audit(
             installation_code, source_device_code, target_device_code, operation, actor, details
-        ) VALUES ($1, $2, $3, 'claim', $4, jsonb_build_object('reason', $5))
-	`, input.InstallationCode, installation.DeviceCode, device.DeviceCode, actor, input.Reason); err != nil {
+        ) VALUES ($1, $2, $3, 'claim', $4, jsonb_build_object('reason', $5::text))
+    `, input.InstallationCode, installation.DeviceCode, device.DeviceCode, actor, input.Reason); err != nil {
 		return WhoAmIResult{}, WrapError(CodeInternal, "audit device claim", err)
 	}
 	installation, found, err = findInstallation(ctx, tx, input.InstallationCode)
@@ -341,7 +347,7 @@ func (s *Store) MigrateDevice(ctx context.Context, input MigrateDeviceInput) (Wh
 	}
 	if _, err := tx.Exec(ctx, `
         INSERT INTO device_audit(source_device_code, target_device_code, operation, actor, details)
-        VALUES ($1, $2, 'migrate', $3, jsonb_build_object('reason', $4))
+        VALUES ($1, $2, 'migrate', $3, jsonb_build_object('reason', $4::text))
     `, input.SourceDeviceCode, input.TargetDeviceCode, actor, input.Reason); err != nil {
 		return WhoAmIResult{}, WrapError(CodeInternal, "audit device migration", err)
 	}
