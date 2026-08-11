@@ -1,0 +1,87 @@
+version: '3.50.0'
+
+vars:
+  BINARY_NAME: memory-recall-coin
+  MAIN_PACKAGE: ./cmd/memory-recall-coin
+  VERSION: dev
+  REVISION: unknown
+  BUILD_TIME: unknown
+
+tasks:
+  default:
+    desc: 编译当前平台 binary
+    cmds:
+      - task: build
+
+  check:
+    desc: 静态编译全部 Go packages
+    env:
+      CGO_ENABLED: '0'
+    cmds:
+      - go build ./...
+
+  build:
+    desc: 编译当前平台 binary 到 dist
+    cmds:
+      - cmd: powershell.exe -NoLogo -NoProfile -NonInteractive -Command "New-Item -ItemType Directory -Force .\\dist | Out-Null"
+        platforms: [windows]
+      - cmd: mkdir -p dist
+        platforms: [linux, darwin]
+      - task: build:target
+        vars:
+          TARGET_GOOS: '{{OS}}'
+          TARGET_GOARCH: '{{ARCH}}'
+          TARGET_OUTPUT: 'dist/{{.BINARY_NAME}}{{exeExt}}'
+
+  build:linux-amd64:
+    desc: 编译 Linux amd64 binary 到 dist
+    cmds:
+      - cmd: powershell.exe -NoLogo -NoProfile -NonInteractive -Command "New-Item -ItemType Directory -Force .\\dist | Out-Null"
+        platforms: [windows]
+      - cmd: mkdir -p dist
+        platforms: [linux, darwin]
+      - task: build:target
+        vars:
+          TARGET_GOOS: linux
+          TARGET_GOARCH: amd64
+          TARGET_OUTPUT: 'dist/{{.BINARY_NAME}}-linux-amd64'
+
+  build:linux-arm64:
+    desc: 编译 Linux arm64 binary 到 dist
+    cmds:
+      - cmd: powershell.exe -NoLogo -NoProfile -NonInteractive -Command "New-Item -ItemType Directory -Force .\\dist | Out-Null"
+        platforms: [windows]
+      - cmd: mkdir -p dist
+        platforms: [linux, darwin]
+      - task: build:target
+        vars:
+          TARGET_GOOS: linux
+          TARGET_GOARCH: arm64
+          TARGET_OUTPUT: 'dist/{{.BINARY_NAME}}-linux-arm64'
+
+  build:container:
+    desc: 为 Docker buildx 编译 Linux binary
+    requires:
+      vars: [TARGETARCH, OUTPUT]
+    cmds:
+      - task: build:target
+        vars:
+          TARGET_GOOS: linux
+          TARGET_GOARCH: '{{.TARGETARCH}}'
+          TARGET_OUTPUT: '{{.OUTPUT}}'
+
+  build:target:
+    internal: true
+    requires:
+      vars: [TARGET_GOOS, TARGET_GOARCH, TARGET_OUTPUT]
+    env:
+      CGO_ENABLED: '0'
+      GOOS: '{{.TARGET_GOOS}}'
+      GOARCH: '{{.TARGET_GOARCH}}'
+    cmds:
+      - >-
+        go build
+        -trimpath
+        -ldflags="-s -w -X main.version={{.VERSION}} -X main.revision={{.REVISION}} -X main.buildTime={{.BUILD_TIME}}"
+        -o "{{.TARGET_OUTPUT}}"
+        "{{.MAIN_PACKAGE}}"

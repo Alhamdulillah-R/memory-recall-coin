@@ -1,0 +1,11 @@
+image: mignon/memory-recall-coin
+
+build:
+  context: .
+  dockerfile: Dockerfile
+
+deploy:
+  namespace: memory-recall-coin
+  resource: deployment/memory-recall-coin
+  container: memory-recall-coin
+  timeout: 300s

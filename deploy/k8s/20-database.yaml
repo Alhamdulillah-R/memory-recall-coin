@@ -1,0 +1,73 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: memory-recall-db
+  namespace: memory-recall-coin
+  labels:
+    app.kubernetes.io/name: memory-recall-db
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: memory-recall-coin
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4-standard-trixie@sha256:f0cc49632b5cc1e51f65ba03658c89bd31d64ea2672b14843a808a8d281417e1
+  enableSuperuserAccess: false
+  primaryUpdateStrategy: unsupervised
+  minSyncReplicas: 1
+  maxSyncReplicas: 1
+  bootstrap:
+    initdb:
+      database: memory_recall
+      owner: memory_recall
+      encoding: UTF8
+      localeCType: C.UTF-8
+      localeCollate: C.UTF-8
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 3Gi
+  storage:
+    storageClass: local-path-retain
+    size: 30Gi
+    resizeInUseVolumes: false
+  postgresql:
+    parameters:
+      shared_buffers: 512MB
+      effective_cache_size: 1536MB
+      maintenance_work_mem: 128MB
+      work_mem: 8MB
+      max_connections: "100"
+      wal_compression: "on"
+      track_io_timing: "on"
+  monitoring:
+    disableDefaultQueries: false
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: memory-recall
+  namespace: memory-recall-coin
+  labels:
+    app.kubernetes.io/name: memory-recall-db
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: memory-recall-coin
+spec:
+  name: memory_recall
+  owner: memory_recall
+  ensure: present
+  databaseReclaimPolicy: retain
+  cluster:
+    name: memory-recall-db
+  extensions:
+    - name: vector
+      ensure: present
+    - name: pg_trgm
+      ensure: present
+    - name: pgcrypto
+      ensure: present

@@ -1,0 +1,9 @@
+/dist/
+/.secrets/
+/.idea/
+/.vscode/
+*.exe
+*.log
+.env
+.memory-recall.identity.json
+/deploy/vendor/*.commit.yaml
