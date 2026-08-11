@@ -36,7 +36,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: memory-recall-coin
-          image: rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/memory-recall-coin@sha256:9dd3e63b8b562ac3879a289074dbfc8fc12f81bf092552978b119758fc32e111
+          image: rex-tokyo-serv.tail3078d0.ts.net:8443/mignon/memory-recall-coin@sha256:5373e024f65b3bec1f58052ede7a5d0bd92edadb2b4bdc231fbc64bd8f1c2a4b
           imagePullPolicy: IfNotPresent
           args:
             - serve
