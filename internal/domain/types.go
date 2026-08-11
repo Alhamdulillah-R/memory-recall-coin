@@ -227,6 +227,84 @@ type SearchResponse struct {
 	CandidateCounts map[string]int `json:"candidate_counts"`
 }
 
+// MemoryListItem is one memory returned by filter-only browsing.
+type MemoryListItem struct {
+	ID                string          `json:"id"`
+	SourceID          string          `json:"source_id,omitempty"`
+	Namespace         string          `json:"namespace"`
+	ScopeType         string          `json:"scope_type"`
+	ScopeID           string          `json:"scope_id,omitempty"`
+	DeviceCode        string          `json:"device_code,omitempty"`
+	InstallationCode  string          `json:"installation_code,omitempty"`
+	WorkspaceCode     string          `json:"workspace_code,omitempty"`
+	Type              string          `json:"type"`
+	Title             string          `json:"title"`
+	Content           string          `json:"content,omitempty"`
+	Snippet           string          `json:"snippet"`
+	Metadata          json.RawMessage `json:"metadata,omitempty"`
+	Tags              []string        `json:"tags"`
+	Status            string          `json:"status"`
+	VerificationState string          `json:"verification_state"`
+	Confidence        float64         `json:"confidence"`
+	Evidence          json.RawMessage `json:"evidence,omitempty"`
+	SourcePath        string          `json:"source_path,omitempty"`
+	SourceHash        string          `json:"source_hash,omitempty"`
+	SourceRange       json.RawMessage `json:"source_range,omitempty"`
+	ExpiresAt         *time.Time      `json:"expires_at,omitempty"`
+	Version           int64           `json:"version"`
+	IsLocal           bool            `json:"is_local"`
+}
+
+// MemoryListResponse contains filter-only memory results without retrieval diagnostics.
+type MemoryListResponse struct {
+	Results     []MemoryListItem `json:"results"`
+	Count       int              `json:"count"`
+	ScopeMode   string           `json:"scope_mode"`
+	DetailLevel string           `json:"detail_level"`
+	DurationMS  int64            `json:"duration_ms"`
+}
+
+// NewMemoryListResponse converts a search response into the dedicated list contract.
+func NewMemoryListResponse(response SearchResponse) MemoryListResponse {
+	results := make([]MemoryListItem, len(response.Results))
+	for index, result := range response.Results {
+		results[index] = MemoryListItem{
+			ID:                result.ID,
+			SourceID:          result.SourceID,
+			Namespace:         result.Namespace,
+			ScopeType:         result.ScopeType,
+			ScopeID:           result.ScopeID,
+			DeviceCode:        result.DeviceCode,
+			InstallationCode:  result.InstallationCode,
+			WorkspaceCode:     result.WorkspaceCode,
+			Type:              result.Type,
+			Title:             result.Title,
+			Content:           result.Content,
+			Snippet:           result.Snippet,
+			Metadata:          result.Metadata,
+			Tags:              result.Tags,
+			Status:            result.Status,
+			VerificationState: result.VerificationState,
+			Confidence:        result.Confidence,
+			Evidence:          result.Evidence,
+			SourcePath:        result.SourcePath,
+			SourceHash:        result.SourceHash,
+			SourceRange:       result.SourceRange,
+			ExpiresAt:         result.ExpiresAt,
+			Version:           result.Version,
+			IsLocal:           result.IsLocal,
+		}
+	}
+
+	return MemoryListResponse{
+		Results:     results,
+		Count:       len(results),
+		ScopeMode:   response.ScopeMode,
+		DetailLevel: response.DetailLevel,
+		DurationMS:  response.DurationMS,
+	}
+}
+
 // IngestedFile carries local file content to the central source index.
 type IngestedFile struct {
 	AbsolutePath string    `json:"absolute_path"`

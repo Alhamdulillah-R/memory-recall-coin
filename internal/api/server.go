@@ -138,7 +138,7 @@ func (s *Server) dispatch(ctx context.Context, request incomingRPCRequest) (any,
 	case "memory_search":
 		return dispatchInput(ctx, request, s.backend.SearchMemory)
 	case "memory_list":
-		return dispatchInput(ctx, request, s.listMemory)
+		return dispatchInput(ctx, request, s.backend.ListMemory)
 	case "memory_delete":
 		return dispatchInput(ctx, request, s.backend.DeleteMemory)
 	case "memory_history":
@@ -178,10 +178,6 @@ func (s *Server) dispatch(ctx context.Context, request incomingRPCRequest) (any,
 	default:
 		return nil, service.NewError(service.CodeInvalidArgument, "unknown RPC method: "+request.Method)
 	}
-}
-
-func (s *Server) listMemory(ctx context.Context, input service.ListMemoryInput) (domain.SearchResponse, error) {
-	return s.backend.SearchMemory(ctx, input.SearchInput())
 }
 
 type callerInput interface {

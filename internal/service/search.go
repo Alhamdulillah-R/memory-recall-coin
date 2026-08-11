@@ -117,6 +117,23 @@ func (s *Store) SearchMemory(ctx context.Context, input SearchMemoryInput) (doma
 	}, nil
 }
 
+/**
+ * ListMemory executes filter-only memory browsing and removes retrieval diagnostics.
+ * @return listed memories in the dedicated list response contract
+ */
+func (s *Store) ListMemory(ctx context.Context, input ListMemoryInput) (domain.MemoryListResponse, error) {
+	if input.DetailLevel == "" {
+		input.DetailLevel = domain.SearchDetailCompact
+	}
+
+	response, err := s.SearchMemory(ctx, input.SearchInput())
+	if err != nil {
+		return domain.MemoryListResponse{}, err
+	}
+
+	return domain.NewMemoryListResponse(response), nil
+}
+
 func normalizeSearchInput(input SearchMemoryInput) (SearchMemoryInput, error) {
 	input.Namespace = strings.ToLower(strings.TrimSpace(input.Namespace))
 	if err := validateNamespace(input.Namespace); err != nil {

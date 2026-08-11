@@ -324,6 +324,7 @@ type Backend interface {
 	PatchMemory(context.Context, PatchMemoryInput) (domain.Memory, error)
 	GetMemory(context.Context, GetMemoryInput) (domain.Memory, error)
 	SearchMemory(context.Context, SearchMemoryInput) (domain.SearchResponse, error)
+	ListMemory(context.Context, ListMemoryInput) (domain.MemoryListResponse, error)
 	DeleteMemory(context.Context, DeleteMemoryInput) (domain.Memory, error)
 	History(context.Context, HistoryInput) ([]domain.Revision, error)
 	RestoreMemory(context.Context, RestoreMemoryInput) (domain.Memory, error)

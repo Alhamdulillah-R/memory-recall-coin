@@ -154,6 +154,21 @@ func (c *Client) SearchMemory(ctx context.Context, input service.SearchMemoryInp
 	return response, nil
 }
 
+// ListMemory forwards filter-only browsing through the dedicated central RPC contract.
+func (c *Client) ListMemory(ctx context.Context, input service.ListMemoryInput) (domain.MemoryListResponse, error) {
+	caller, err := c.caller(ctx, true)
+	if err != nil {
+		return domain.MemoryListResponse{}, err
+	}
+	c.applyNamespace(&input.Namespace)
+	input.Caller = caller
+	if input.DetailLevel == "" {
+		input.DetailLevel = domain.SearchDetailCompact
+	}
+
+	return callRPC[domain.MemoryListResponse](ctx, c, "memory_list", input, caller)
+}
+
 // DeleteMemory forwards memory_delete.
 func (c *Client) DeleteMemory(ctx context.Context, input service.DeleteMemoryInput) (domain.Memory, error) {
 	caller, err := c.caller(ctx, true)

@@ -203,7 +203,9 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_search` 
 | `device_whoami` | 查询当前 installation、device、workspace 与 verified caller identity |
 | `memory_health` | 查询 PostgreSQL 与 embedding provider 状态及 server version |
 
-`memory_search` 和 `memory_list` 默认返回 `detail_level=compact`，保留 title、snippet、scope、status、tags 与可解释 score；需要完整 content、metadata、evidence、device identity 和 source provenance 时显式传 `detail_level=full`。`memory_search.min_relevance` 按返回的 `score.relevance` 在 `0..1` 内过滤低相关结果。
+`memory_search` 和 `memory_list` 默认返回 `detail_level=compact`，保留 title、snippet、scope、status 与 tags。`memory_search` 额外返回可解释 score；`memory_list` 使用独立的 filter-only response，不携带空 query、candidate diagnostics 或全零 score。需要完整 content、metadata、evidence、device identity 和 source provenance 时显式传 `detail_level=full`。`memory_search.min_relevance` 按返回的 `score.relevance` 在 `0..1` 内过滤低相关结果。
+
+Tool 业务错误同时设置 `isError=true` 与 `structuredContent={code,message,details}`；`content` 只保留简短可读文本，因此 `VERSION_CONFLICT` 等调用方可以直接读取 structured details 做自纠正。
 
 默认检索行为是 `scope_mode=prefer_local`，同时排除 expired、refuted、superseded 和 deleted 记录。mutation 应携带 `expected_version`；可能重试的 write 应携带稳定 `idempotency_key`。
 

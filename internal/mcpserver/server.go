@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -84,6 +85,12 @@ type WatchListResult struct {
 	Watches []ingest.WatchInfo `json:"watches"`
 }
 
+type toolError struct {
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
+}
+
 /**
  * New creates an MCP server with the complete memory, source, watch and identity tool set.
  * @return configured MCP server
@@ -151,15 +158,62 @@ func addTypedTool[Input, Output any](
 	if err != nil {
 		panic(fmt.Errorf("build output schema for %s: %w", definition.Name, err))
 	}
+	errorSchema, err := jsonschema.For[toolError](nil)
+	if err != nil {
+		panic(fmt.Errorf("build error schema for %s: %w", definition.Name, err))
+	}
 
 	repairRawJSONProperties(inputSchema)
 	repairRawJSONProperties(outputSchema)
 	relaxLocalInputDefaults(inputSchema)
 	applyInputSchemaConstraints(definition.Name, inputSchema)
 	definition.InputSchema = inputSchema
-	definition.OutputSchema = outputSchema
+	definition.OutputSchema = &jsonschema.Schema{
+		Type:  "object",
+		OneOf: []*jsonschema.Schema{outputSchema, errorSchema},
+	}
 
-	mcp.AddTool(server, definition, handler)
+	wrappedHandler := func(
+		ctx context.Context,
+		request *mcp.CallToolRequest,
+		input Input,
+	) (*mcp.CallToolResult, any, error) {
+		result, output, handlerErr := handler(ctx, request, input)
+		if handlerErr == nil {
+			return result, output, nil
+		}
+
+		errorResult, ok := structuredToolError(handlerErr)
+		if ok {
+			return errorResult, nil, nil
+		}
+
+		return nil, nil, handlerErr
+	}
+
+	mcp.AddTool[Input, any](server, definition, wrappedHandler)
+}
+
+func structuredToolError(err error) (*mcp.CallToolResult, bool) {
+	var serviceErr *service.Error
+	if !errors.As(err, &serviceErr) {
+		return nil, false
+	}
+
+	payload := toolError{
+		Code:    serviceErr.Code,
+		Message: serviceErr.Message,
+		Details: serviceErr.Details,
+	}
+	result := &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: payload.Code + ": " + payload.Message},
+		},
+		StructuredContent: payload,
+	}
+	result.SetError(err)
+
+	return result, true
 }
 
 func relaxLocalInputDefaults(schema *jsonschema.Schema) {
@@ -490,11 +544,11 @@ func (h *Handlers) searchMemory(ctx context.Context, _ *mcp.CallToolRequest, inp
 	return nil, result, err
 }
 
-func (h *Handlers) listMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.ListMemoryInput) (*mcp.CallToolResult, domain.SearchResponse, error) {
+func (h *Handlers) listMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.ListMemoryInput) (*mcp.CallToolResult, domain.MemoryListResponse, error) {
 	if input.DetailLevel == "" {
 		input.DetailLevel = domain.SearchDetailCompact
 	}
-	result, err := h.backend.SearchMemory(ctx, input.SearchInput())
+	result, err := h.backend.ListMemory(ctx, input)
 	return nil, result, err
 }
 
