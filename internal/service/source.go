@@ -153,8 +153,18 @@ func (s *Store) SyncSources(ctx context.Context, input SyncSourcesInput) (domain
  * @return source records and embedding queue counters
  */
 func (s *Store) SourceStatus(ctx context.Context, input SourceStatusInput) (domain.SourceStatus, error) {
-	if err := validateNamespace(input.Namespace); err != nil {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
 		return domain.SourceStatus{}, err
+	}
+	input.Namespace = namespace
+	if input.NamespaceMatch == "" {
+		input.NamespaceMatch = domain.NamespaceMatchExact
+	}
+	switch input.NamespaceMatch {
+	case domain.NamespaceMatchExact, domain.NamespaceMatchSubtree:
+	default:
+		return domain.SourceStatus{}, NewError(CodeInvalidArgument, "namespace_match must be exact or subtree")
 	}
 	if input.SourceID == "" && input.Path == "" && input.IngestionID == "" {
 		return domain.SourceStatus{}, NewError(CodeInvalidArgument, "source_id, path, or ingestion_id is required")
@@ -166,15 +176,14 @@ func (s *Store) SourceStatus(ctx context.Context, input SourceStatusInput) (doma
 		input.Limit = 200
 	}
 
-	args := []any{input.Namespace}
-	conditions := []string{"s.namespace = $1"}
+	conditions, args := appendNamespaceFilter(nil, nil, "s.namespace", input.Namespace, input.NamespaceMatch)
 	if input.SourceID != "" {
 		args = append(args, input.SourceID)
 		conditions = append(conditions, "s.id = $"+fmt.Sprint(len(args)))
 	}
 	if input.Path != "" {
-		args = append(args, "%"+normalizePath(input.Path)+"%")
-		conditions = append(conditions, "s.normalized_path ILIKE $"+fmt.Sprint(len(args)))
+		args = append(args, "%"+escapeLikePattern(normalizePath(input.Path))+"%")
+		conditions = append(conditions, "s.normalized_path ILIKE $"+fmt.Sprint(len(args))+` ESCAPE E'\\'`)
 	}
 	if input.IngestionID != "" {
 		args = append(args, input.IngestionID)
@@ -193,7 +202,11 @@ func (s *Store) SourceStatus(ctx context.Context, input SourceStatusInput) (doma
 	}
 	defer rows.Close()
 
-	status := domain.SourceStatus{Sources: make([]domain.Source, 0, input.Limit)}
+	status := domain.SourceStatus{
+		Sources:        make([]domain.Source, 0, input.Limit),
+		Namespace:      input.Namespace,
+		NamespaceMatch: input.NamespaceMatch,
+	}
 	for rows.Next() {
 		source, err := scanSource(rows)
 		if err != nil {
@@ -231,15 +244,20 @@ func (s *Store) SourceStatus(ctx context.Context, input SourceStatusInput) (doma
  * @return deleted source state
  */
 func (s *Store) DeleteSource(ctx context.Context, input DeleteSourceInput) (domain.Source, error) {
-	if err := validateNamespace(input.Namespace); err != nil {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
 		return domain.Source{}, err
 	}
+	input.Namespace = namespace
 	actor := normalizeActor("", input.Caller)
 	tx, err := s.beginMutation(ctx, actor, input.Reason)
 	if err != nil {
 		return domain.Source{}, err
 	}
 	defer rollback(tx)
+	if err := assertNamespaceActive(ctx, tx, input.Namespace); err != nil {
+		return domain.Source{}, err
+	}
 
 	source, err := scanSource(tx.QueryRow(ctx, `
 		UPDATE sources AS s
@@ -284,10 +302,11 @@ func (s *Store) Health(ctx context.Context) (HealthResult, error) {
 }
 
 func normalizeSyncInput(input SyncSourcesInput) (SyncSourcesInput, error) {
-	input.Namespace = strings.ToLower(strings.TrimSpace(input.Namespace))
-	if err := validateNamespace(input.Namespace); err != nil {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
 		return SyncSourcesInput{}, err
 	}
+	input.Namespace = namespace
 	if err := requireNonEmpty("root_path", input.RootPath); err != nil {
 		return SyncSourcesInput{}, err
 	}
@@ -557,9 +576,9 @@ func insertSource(
 		return "", WrapError(CodeInternal, "insert source", err)
 	}
 	if _, err := tx.Exec(ctx, `
-        INSERT INTO source_versions(source_id, generation, content_id, content_hash, size, mtime)
-        VALUES ($1, 1, $2, $3, $4, $5)
-    `, sourceID, contentID, file.ContentHash, file.Size, file.MTime); err != nil {
+		INSERT INTO source_versions(namespace, source_id, generation, content_id, content_hash, size, mtime)
+		VALUES ($1, $2, 1, $3, $4, $5, $6)
+	`, input.Namespace, sourceID, contentID, file.ContentHash, file.Size, file.MTime); err != nil {
 		return "", WrapError(CodeInternal, "insert source version", err)
 	}
 
@@ -639,9 +658,9 @@ func updateChangedSource(
 		return WrapError(CodeInternal, "update changed source", err)
 	}
 	if _, err := tx.Exec(ctx, `
-        INSERT INTO source_versions(source_id, generation, content_id, content_hash, size, mtime)
-        VALUES ($1, $2, $3, $4, $5, $6)
-    `, state.ID, nextGeneration, contentID, file.ContentHash, file.Size, file.MTime); err != nil {
+		INSERT INTO source_versions(namespace, source_id, generation, content_id, content_hash, size, mtime)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, input.Namespace, state.ID, nextGeneration, contentID, file.ContentHash, file.Size, file.MTime); err != nil {
 		return WrapError(CodeInternal, "insert changed source version", err)
 	}
 

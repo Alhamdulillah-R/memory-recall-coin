@@ -23,18 +23,20 @@
 
 ### 2.1 namespace
 
-`namespace` 表示项目，而不是设备。
+`namespace` 表示项目内的层级路径，而不是设备。路径由小写 slash-separated segments 组成；现有单段 namespace 仍然有效。
 
 示例：
 
 ```text
-rex-mirror-realm
-spider-aav
-akamai-abck
+memory-recall-coin
+memory-recall-coin/android
+memory-recall-coin/android/anti-bot
 personal-global
 ```
 
-所有 memory、source、revision 和 chunk 必须属于一个 namespace。调用方必须显式传入 namespace，或者由 workspace 配置自动解析，服务端不能根据当前目录随意猜测。
+所有 memory、source、revision 和 chunk 必须属于一个 exact namespace。写入 leaf 时自动建立缺失的 ancestors。调用方必须显式传入 namespace，或者由 workspace 配置自动解析，服务端不能根据当前目录随意猜测。
+
+读取默认使用 `namespace_match=exact`；只有显式传 `subtree` 才包含 descendants。`namespace_list` 负责浏览 child paths 和 direct/subtree counts。`namespace_delete` 必须显式传 namespace 与 reason，默认 `dry_run=true`；非递归删除遇到 active child 时拒绝执行，递归删除会 hard purge 整棵 subtree 的 memory、source、embedding、ingestion 与 watch registration，并保留不可复用的 tombstone。
 
 ### 2.2 device_code
 
@@ -349,6 +351,9 @@ memory_put
 memory_patch
 memory_get
 memory_search
+memory_list
+namespace_list
+namespace_delete
 memory_delete
 memory_history
 memory_supersede
@@ -374,6 +379,7 @@ scope_type
 
 ```text
 scope_mode = prefer_local
+namespace_match = exact
 include_expired = false
 include_refuted = false
 include_superseded = false
@@ -414,6 +420,8 @@ hybrid search p95 <= 200 ms（包含本地 query embedding）
 - 设备 A 写入 project memory，设备 B 可以立即查询；
 - 同时存在本机和其他设备相似结果时，`prefer_local` 优先本机有效记录；
 - project scope 的 confirmed memory 可以压过本机 refuted memory；
+- parent namespace 的 exact 查询不返回 child 数据，`namespace_match=subtree` 才返回完整 descendants；
+- namespace 删除默认只返回 dry-run counts，递归 hard purge 后旧 watch 无法重新写回 tombstoned subtree；
 - 修改 memory 后 version 增加，旧内容可从 history 获取；
 - TTL 到期后无需等待 GC，正常查询立即不可见；
 - 上传同 hash 文件不会产生重复 chunk；

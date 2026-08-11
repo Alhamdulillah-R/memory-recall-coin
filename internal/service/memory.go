@@ -67,6 +67,11 @@ type memorySnapshot struct {
  * @return created memory or an error
  */
 func (s *Store) PutMemory(ctx context.Context, input PutMemoryInput) (domain.Memory, error) {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
+		return domain.Memory{}, err
+	}
+	input.Namespace = namespace
 	idempotencyInput := input
 	normalized, err := normalizePutInput(input)
 	if err != nil {
@@ -79,6 +84,9 @@ func (s *Store) PutMemory(ctx context.Context, input PutMemoryInput) (domain.Mem
 		return domain.Memory{}, err
 	}
 	defer rollback(tx)
+	if err := ensureNamespace(ctx, tx, normalized.Namespace); err != nil {
+		return domain.Memory{}, err
+	}
 
 	var cached domain.Memory
 	hit, hash, err := lockIdempotency(
@@ -117,10 +125,11 @@ func (s *Store) PutMemory(ctx context.Context, input PutMemoryInput) (domain.Mem
 }
 
 func normalizePutInput(input PutMemoryInput) (PutMemoryInput, error) {
-	input.Namespace = strings.ToLower(strings.TrimSpace(input.Namespace))
-	if err := validateNamespace(input.Namespace); err != nil {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
 		return PutMemoryInput{}, err
 	}
+	input.Namespace = namespace
 	if input.ID == "" {
 		input.ID = NewID("mem")
 	}
@@ -256,9 +265,11 @@ func (s *Store) insertMemoryTx(
  * @return updated memory or a version conflict
  */
 func (s *Store) PatchMemory(ctx context.Context, input PatchMemoryInput) (domain.Memory, error) {
-	if err := validateNamespace(input.Namespace); err != nil {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
 		return domain.Memory{}, err
 	}
+	input.Namespace = namespace
 	if input.ExpectedVersion < 1 {
 		return domain.Memory{}, NewError(CodeInvalidArgument, "expected_version must be positive")
 	}
@@ -269,6 +280,9 @@ func (s *Store) PatchMemory(ctx context.Context, input PatchMemoryInput) (domain
 		return domain.Memory{}, err
 	}
 	defer rollback(tx)
+	if err := assertNamespaceActive(ctx, tx, input.Namespace); err != nil {
+		return domain.Memory{}, err
+	}
 
 	var cached domain.Memory
 	hit, hash, err := lockIdempotency(ctx, tx, input.Namespace, actor, "memory_patch", input.IdempotencyKey, input, &cached)
@@ -410,9 +424,11 @@ func (s *Store) PatchMemory(ctx context.Context, input PatchMemoryInput) (domain
  * @return memory, or NOT_FOUND when hidden by lifecycle/TTL filters
  */
 func (s *Store) GetMemory(ctx context.Context, input GetMemoryInput) (domain.Memory, error) {
-	if err := validateNamespace(input.Namespace); err != nil {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
 		return domain.Memory{}, err
 	}
+	input.Namespace = namespace
 	if input.Version != nil {
 		var snapshot []byte
 		err := s.pool.QueryRow(ctx, `
@@ -549,6 +565,11 @@ func (s *Store) memoryNotFoundError(
  * @return deleted current version
  */
 func (s *Store) DeleteMemory(ctx context.Context, input DeleteMemoryInput) (domain.Memory, error) {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
+		return domain.Memory{}, err
+	}
+	input.Namespace = namespace
 	actor := normalizeActor(input.Actor, input.Caller)
 	return s.updateLifecycle(
 		ctx,
@@ -569,9 +590,11 @@ func (s *Store) DeleteMemory(ctx context.Context, input DeleteMemoryInput) (doma
  * @return revision page
  */
 func (s *Store) History(ctx context.Context, input HistoryInput) ([]domain.Revision, error) {
-	if err := validateNamespace(input.Namespace); err != nil {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
 		return nil, err
 	}
+	input.Namespace = namespace
 	if input.Limit <= 0 {
 		input.Limit = 50
 	}
@@ -623,9 +646,11 @@ func (s *Store) History(ctx context.Context, input HistoryInput) ([]domain.Revis
  * @return restored current memory
  */
 func (s *Store) RestoreMemory(ctx context.Context, input RestoreMemoryInput) (domain.Memory, error) {
-	if err := validateNamespace(input.Namespace); err != nil {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
 		return domain.Memory{}, err
 	}
+	input.Namespace = namespace
 	if err := requireNonEmpty("memory_id", input.ID); err != nil {
 		return domain.Memory{}, err
 	}
@@ -638,6 +663,9 @@ func (s *Store) RestoreMemory(ctx context.Context, input RestoreMemoryInput) (do
 		return domain.Memory{}, err
 	}
 	defer rollback(tx)
+	if err := assertNamespaceActive(ctx, tx, input.Namespace); err != nil {
+		return domain.Memory{}, err
+	}
 
 	var cached domain.Memory
 	hit, hash, err := lockIdempotency(
@@ -748,10 +776,12 @@ func (s *Store) RestoreMemory(ctx context.Context, input RestoreMemoryInput) (do
  * @return replacement memory
  */
 func (s *Store) SupersedeMemory(ctx context.Context, input SupersedeMemoryInput) (domain.Memory, error) {
-	idempotencyInput := input
-	if err := validateNamespace(input.Namespace); err != nil {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
 		return domain.Memory{}, err
 	}
+	input.Namespace = namespace
+	idempotencyInput := input
 	if err := requireNonEmpty("target_memory_id", input.TargetID); err != nil {
 		return domain.Memory{}, err
 	}
@@ -771,6 +801,9 @@ func (s *Store) SupersedeMemory(ctx context.Context, input SupersedeMemoryInput)
 		return domain.Memory{}, err
 	}
 	defer rollback(tx)
+	if err := assertNamespaceActive(ctx, tx, input.Namespace); err != nil {
+		return domain.Memory{}, err
+	}
 
 	var cached domain.Memory
 	hit, hash, err := lockIdempotency(
@@ -853,9 +886,11 @@ func (s *Store) SupersedeMemory(ctx context.Context, input SupersedeMemoryInput)
  * @return refuted current memory
  */
 func (s *Store) RefuteMemory(ctx context.Context, input RefuteMemoryInput) (domain.Memory, error) {
-	if err := validateNamespace(input.Namespace); err != nil {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
 		return domain.Memory{}, err
 	}
+	input.Namespace = namespace
 	if err := requireNonEmpty("target_memory_id", input.TargetID); err != nil {
 		return domain.Memory{}, err
 	}
@@ -869,6 +904,9 @@ func (s *Store) RefuteMemory(ctx context.Context, input RefuteMemoryInput) (doma
 		return domain.Memory{}, err
 	}
 	defer rollback(tx)
+	if err := assertNamespaceActive(ctx, tx, input.Namespace); err != nil {
+		return domain.Memory{}, err
+	}
 
 	var cached domain.Memory
 	hit, hash, err := lockIdempotency(
@@ -953,9 +991,11 @@ func (s *Store) RefuteMemory(ctx context.Context, input RefuteMemoryInput) (doma
  * @return updated memory
  */
 func (s *Store) TouchMemory(ctx context.Context, input TouchMemoryInput) (domain.Memory, error) {
-	if err := validateNamespace(input.Namespace); err != nil {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
 		return domain.Memory{}, err
 	}
+	input.Namespace = namespace
 	if err := requireNonEmpty("memory_id", input.ID); err != nil {
 		return domain.Memory{}, err
 	}
@@ -986,6 +1026,9 @@ func (s *Store) TouchMemory(ctx context.Context, input TouchMemoryInput) (domain
 		return domain.Memory{}, err
 	}
 	defer rollback(tx)
+	if err := assertNamespaceActive(ctx, tx, input.Namespace); err != nil {
+		return domain.Memory{}, err
+	}
 
 	var cached domain.Memory
 	hit, hash, err := lockIdempotency(
@@ -1062,9 +1105,11 @@ func (s *Store) updateLifecycle(
 	method string,
 	idempotencyInput any,
 ) (domain.Memory, error) {
-	if err := validateNamespace(namespace); err != nil {
+	normalizedNamespace, err := normalizeNamespace(namespace)
+	if err != nil {
 		return domain.Memory{}, err
 	}
+	namespace = normalizedNamespace
 	if expectedVersion < 1 {
 		return domain.Memory{}, NewError(CodeInvalidArgument, "expected_version must be positive")
 	}
@@ -1074,6 +1119,9 @@ func (s *Store) updateLifecycle(
 		return domain.Memory{}, err
 	}
 	defer rollback(tx)
+	if err := assertNamespaceActive(ctx, tx, namespace); err != nil {
+		return domain.Memory{}, err
+	}
 
 	var cached domain.Memory
 	hit, hash, err := lockIdempotency(

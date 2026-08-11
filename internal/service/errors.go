@@ -7,13 +7,14 @@ import (
 )
 
 const (
-	CodeInvalidArgument = "INVALID_ARGUMENT"
-	CodeNotFound        = "NOT_FOUND"
-	CodeConflict        = "VERSION_CONFLICT"
-	CodeAlreadyExists   = "ALREADY_EXISTS"
-	CodeUnauthorized    = "UNAUTHORIZED"
-	CodeUnavailable     = "UNAVAILABLE"
-	CodeInternal        = "INTERNAL"
+	CodeInvalidArgument    = "INVALID_ARGUMENT"
+	CodeNotFound           = "NOT_FOUND"
+	CodeConflict           = "VERSION_CONFLICT"
+	CodeAlreadyExists      = "ALREADY_EXISTS"
+	CodeFailedPrecondition = "FAILED_PRECONDITION"
+	CodeUnauthorized       = "UNAUTHORIZED"
+	CodeUnavailable        = "UNAVAILABLE"
+	CodeInternal           = "INTERNAL"
 )
 
 // Error is a stable service error suitable for MCP and HTTP clients.

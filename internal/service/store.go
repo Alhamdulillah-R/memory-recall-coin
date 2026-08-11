@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -73,8 +74,167 @@ func rollback(tx pgx.Tx) {
 }
 
 func ensureNamespace(ctx context.Context, tx pgx.Tx, namespace string) error {
-	if _, err := tx.Exec(ctx, "INSERT INTO namespaces(code) VALUES ($1) ON CONFLICT DO NOTHING", namespace); err != nil {
-		return WrapError(CodeInternal, "ensure namespace", err)
+	if err := lockNamespaceCatalog(ctx, tx, false); err != nil {
+		return err
+	}
+	ancestors, err := lockNamespaceHierarchy(ctx, tx, namespace)
+	if err != nil {
+		return err
+	}
+	for _, ancestor := range ancestors {
+		if _, err := tx.Exec(ctx, "INSERT INTO namespaces(code) VALUES ($1) ON CONFLICT DO NOTHING", ancestor); err != nil {
+			return WrapError(CodeInternal, "ensure namespace hierarchy", err)
+		}
+	}
+
+	return rejectDeletedNamespace(ctx, tx, namespace, ancestors)
+}
+
+func assertNamespaceActive(ctx context.Context, tx pgx.Tx, namespace string) error {
+	if err := lockNamespaceCatalog(ctx, tx, false); err != nil {
+		return err
+	}
+	ancestors, err := lockNamespaceHierarchy(ctx, tx, namespace)
+	if err != nil {
+		return err
+	}
+	if err := rejectDeletedNamespace(ctx, tx, namespace, ancestors); err != nil {
+		return err
+	}
+
+	var active bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM namespaces
+			WHERE code = $1 AND lifecycle_status = 'active'
+		)
+	`, namespace).Scan(&active); err != nil {
+		return WrapError(CodeInternal, "inspect namespace state", err)
+	}
+	if !active {
+		return NewError(CodeNotFound, "namespace not found")
+	}
+
+	return nil
+}
+
+func lockNamespaceHierarchy(ctx context.Context, tx pgx.Tx, namespace string) ([]string, error) {
+	ancestors := namespaceAncestors(namespace)
+	for _, ancestor := range ancestors {
+		if err := lockNamespace(ctx, tx, ancestor, false); err != nil {
+			return nil, err
+		}
+	}
+
+	return ancestors, nil
+}
+
+func lockNamespaceDeletionHierarchy(ctx context.Context, tx pgx.Tx, namespace string) ([]string, error) {
+	ancestors := namespaceAncestors(namespace)
+	for index, ancestor := range ancestors {
+		exclusive := index == len(ancestors)-1
+		if err := lockNamespace(ctx, tx, ancestor, exclusive); err != nil {
+			return nil, err
+		}
+	}
+
+	return ancestors, nil
+}
+
+func rejectDeletedNamespace(ctx context.Context, tx pgx.Tx, namespace string, ancestors []string) error {
+	var deletedNamespace string
+	err := tx.QueryRow(ctx, `
+		SELECT code
+		FROM namespaces
+		WHERE code = ANY($1::text[]) AND lifecycle_status = 'deleted'
+		ORDER BY length(code), code
+		LIMIT 1
+	`, ancestors).Scan(&deletedNamespace)
+	if errorsIsNoRows(err) {
+		return nil
+	}
+	if err != nil {
+		return WrapError(CodeInternal, "inspect namespace hierarchy", err)
+	}
+
+	serviceErr := NewError(CodeFailedPrecondition, "namespace hierarchy contains a deleted namespace")
+	serviceErr.Details = map[string]any{
+		"namespace":         namespace,
+		"deleted_namespace": deletedNamespace,
+	}
+
+	return serviceErr
+}
+
+func lockNamespace(ctx context.Context, tx pgx.Tx, namespace string, exclusive bool) error {
+	function := "pg_advisory_xact_lock_shared"
+	if exclusive {
+		function = "pg_advisory_xact_lock"
+	}
+	query := "SELECT " + function + "(hashtextextended('memory-recall-coin:namespace:' || $1, 0))"
+	if _, err := tx.Exec(ctx, query, namespace); err != nil {
+		return WrapError(CodeInternal, "lock namespace", err)
+	}
+
+	return nil
+}
+
+func lockActiveNamespaceHierarchies(ctx context.Context, tx pgx.Tx) error {
+	if err := lockNamespaceCatalog(ctx, tx, true); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, "SELECT code FROM namespaces WHERE lifecycle_status = 'active'")
+	if err != nil {
+		return WrapError(CodeInternal, "list active namespaces", err)
+	}
+
+	locks := make(map[string]struct{})
+	for rows.Next() {
+		var namespace string
+		if err := rows.Scan(&namespace); err != nil {
+			rows.Close()
+			return WrapError(CodeInternal, "scan active namespace", err)
+		}
+		for _, ancestor := range namespaceAncestors(namespace) {
+			locks[ancestor] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return WrapError(CodeInternal, "iterate active namespaces", err)
+	}
+	rows.Close()
+
+	namespaces := make([]string, 0, len(locks))
+	for namespace := range locks {
+		namespaces = append(namespaces, namespace)
+	}
+	sort.Slice(namespaces, func(left, right int) bool {
+		leftDepth := strings.Count(namespaces[left], "/")
+		rightDepth := strings.Count(namespaces[right], "/")
+		if leftDepth != rightDepth {
+			return leftDepth < rightDepth
+		}
+
+		return namespaces[left] < namespaces[right]
+	})
+	for _, namespace := range namespaces {
+		if err := lockNamespace(ctx, tx, namespace, true); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func lockNamespaceCatalog(ctx context.Context, tx pgx.Tx, exclusive bool) error {
+	function := "pg_advisory_xact_lock_shared"
+	if exclusive {
+		function = "pg_advisory_xact_lock"
+	}
+	query := "SELECT " + function + "(hashtextextended('memory-recall-coin:namespace-catalog', 0))"
+	if _, err := tx.Exec(ctx, query); err != nil {
+		return WrapError(CodeInternal, "lock namespace catalog", err)
 	}
 
 	return nil

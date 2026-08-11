@@ -203,6 +203,7 @@ func runLocalMCP(cfg config.Config, logger *slog.Logger) error {
 		Version:          version,
 		Logger:           logger,
 		IngestionManager: manager,
+		DefaultNamespace: cfg.DefaultNamespace,
 	})
 	logger.Info("local stdio MCP bridge started", "api_url", cfg.APIURL, "version", version)
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil && !isNormalStdioClose(err) {

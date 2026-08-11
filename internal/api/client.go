@@ -169,6 +169,30 @@ func (c *Client) ListMemory(ctx context.Context, input service.ListMemoryInput) 
 	return callRPC[domain.MemoryListResponse](ctx, c, "memory_list", input, caller)
 }
 
+// ListNamespaces forwards hierarchical namespace discovery.
+func (c *Client) ListNamespaces(ctx context.Context, input service.NamespaceListInput) (domain.NamespaceListResponse, error) {
+	caller, err := c.caller(ctx, true)
+	if err != nil {
+		return domain.NamespaceListResponse{}, err
+	}
+	c.applyNamespace(&input.Parent)
+	input.Caller = caller
+
+	return callRPC[domain.NamespaceListResponse](ctx, c, "namespace_list", input, caller)
+}
+
+// DeleteNamespace forwards namespace deletion previews and confirmed cleanup.
+func (c *Client) DeleteNamespace(ctx context.Context, input service.NamespaceDeleteInput) (domain.NamespaceDeleteResult, error) {
+	caller, err := c.caller(ctx, true)
+	if err != nil {
+		return domain.NamespaceDeleteResult{}, err
+	}
+	input.Namespace = strings.ToLower(strings.TrimSpace(input.Namespace))
+	input.Caller = caller
+
+	return callRPC[domain.NamespaceDeleteResult](ctx, c, "namespace_delete", input, caller)
+}
+
 // DeleteMemory forwards memory_delete.
 func (c *Client) DeleteMemory(ctx context.Context, input service.DeleteMemoryInput) (domain.Memory, error) {
 	caller, err := c.caller(ctx, true)
@@ -563,6 +587,7 @@ func (c *Client) applyNamespace(namespace *string) {
 	if strings.TrimSpace(*namespace) == "" {
 		*namespace = c.defaultNamespace
 	}
+	*namespace = strings.ToLower(strings.TrimSpace(*namespace))
 }
 
 func (c *Client) applyMemoryDefaults(namespace, scopeType, scopeID *string, caller *domain.CallerIdentity) {

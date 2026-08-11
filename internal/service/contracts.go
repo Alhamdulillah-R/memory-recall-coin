@@ -10,7 +10,7 @@ import (
 
 // PutMemoryInput creates one versioned memory.
 type PutMemoryInput struct {
-	Namespace         string                `json:"namespace" jsonschema:"project namespace; may use configured workspace default when omitted"`
+	Namespace         string                `json:"namespace" jsonschema:"slash-separated namespace path; may use configured workspace default when omitted"`
 	ID                string                `json:"id,omitempty" jsonschema:"optional stable memory ID; generated when omitted"`
 	ScopeType         string                `json:"scope_type" jsonschema:"installation, device, workspace, project, or global"`
 	ScopeID           string                `json:"scope_id,omitempty" jsonschema:"scope identifier; inferred from caller identity when omitted"`
@@ -77,6 +77,7 @@ type GetMemoryInput struct {
 // SearchMemoryInput selects retrieval channels and filters.
 type SearchMemoryInput struct {
 	Namespace         string                `json:"namespace"`
+	NamespaceMatch    string                `json:"namespace_match,omitempty" jsonschema:"exact or subtree; default exact"`
 	Query             string                `json:"query"`
 	RetrievalMode     string                `json:"retrieval_mode,omitempty" jsonschema:"hybrid, exact, substring, lexical, or semantic; default hybrid"`
 	ScopeMode         string                `json:"scope_mode,omitempty" jsonschema:"prefer_local, local_only, project_only, or all_devices"`
@@ -106,6 +107,7 @@ type SearchMemoryInput struct {
 // ListMemoryInput browses memories using filters without requiring a search query.
 type ListMemoryInput struct {
 	Namespace         string                `json:"namespace"`
+	NamespaceMatch    string                `json:"namespace_match,omitempty" jsonschema:"exact or subtree; default exact"`
 	ScopeMode         string                `json:"scope_mode,omitempty" jsonschema:"prefer_local, local_only, project_only, or all_devices"`
 	DetailLevel       string                `json:"detail_level,omitempty" jsonschema:"compact or full; default compact"`
 	TagsAny           []string              `json:"tags_any,omitempty"`
@@ -131,6 +133,7 @@ type ListMemoryInput struct {
 func (input ListMemoryInput) SearchInput() SearchMemoryInput {
 	return SearchMemoryInput{
 		Namespace:         input.Namespace,
+		NamespaceMatch:    input.NamespaceMatch,
 		RetrievalMode:     "list",
 		ScopeMode:         input.ScopeMode,
 		DetailLevel:       input.DetailLevel,
@@ -154,6 +157,30 @@ func (input ListMemoryInput) SearchInput() SearchMemoryInput {
 		CandidateLimit:    input.Limit,
 		Caller:            input.Caller,
 	}
+}
+
+// NamespaceListInput browses the namespace tree below one parent path.
+type NamespaceListInput struct {
+	Parent         string                `json:"parent,omitempty" jsonschema:"parent namespace; configured caller namespace when omitted"`
+	Depth          int                   `json:"depth,omitempty" jsonschema:"maximum descendant depth from 1 to 16; default 1"`
+	IncludeDeleted bool                  `json:"include_deleted,omitempty"`
+	Limit          int                   `json:"limit,omitempty" jsonschema:"maximum namespaces from 1 to 200; default 100"`
+	Cursor         string                `json:"cursor,omitempty"`
+	Caller         domain.CallerIdentity `json:"-"`
+}
+
+// NamespaceDeleteInput previews or deletes one namespace and optionally its subtree.
+type NamespaceDeleteInput struct {
+	Namespace string                `json:"namespace" jsonschema:"required target namespace path; no configured default is applied"`
+	Recursive bool                  `json:"recursive,omitempty" jsonschema:"include every descendant namespace; default false"`
+	DryRun    *bool                 `json:"dry_run,omitempty" jsonschema:"preview affected records without deleting; default true"`
+	Reason    string                `json:"reason" jsonschema:"required audit reason"`
+	Caller    domain.CallerIdentity `json:"-"`
+}
+
+// ShouldDryRun resolves the safe default for namespace deletion.
+func (input NamespaceDeleteInput) ShouldDryRun() bool {
+	return input.DryRun == nil || *input.DryRun
 }
 
 // DeleteMemoryInput soft-deletes a memory using optimistic concurrency.
@@ -293,12 +320,13 @@ type SyncSourcesInput struct {
 
 // SourceStatusInput queries source and embedding state.
 type SourceStatusInput struct {
-	Namespace   string                `json:"namespace"`
-	SourceID    string                `json:"source_id,omitempty"`
-	Path        string                `json:"path,omitempty"`
-	IngestionID string                `json:"ingestion_id,omitempty"`
-	Limit       int                   `json:"limit,omitempty"`
-	Caller      domain.CallerIdentity `json:"-"`
+	Namespace      string                `json:"namespace"`
+	NamespaceMatch string                `json:"namespace_match,omitempty" jsonschema:"exact or subtree; default exact"`
+	SourceID       string                `json:"source_id,omitempty"`
+	Path           string                `json:"path,omitempty"`
+	IngestionID    string                `json:"ingestion_id,omitempty"`
+	Limit          int                   `json:"limit,omitempty"`
+	Caller         domain.CallerIdentity `json:"-"`
 }
 
 // DeleteSourceInput removes only the server-side source index.
@@ -325,6 +353,8 @@ type Backend interface {
 	GetMemory(context.Context, GetMemoryInput) (domain.Memory, error)
 	SearchMemory(context.Context, SearchMemoryInput) (domain.SearchResponse, error)
 	ListMemory(context.Context, ListMemoryInput) (domain.MemoryListResponse, error)
+	ListNamespaces(context.Context, NamespaceListInput) (domain.NamespaceListResponse, error)
+	DeleteNamespace(context.Context, NamespaceDeleteInput) (domain.NamespaceDeleteResult, error)
 	DeleteMemory(context.Context, DeleteMemoryInput) (domain.Memory, error)
 	History(context.Context, HistoryInput) ([]domain.Revision, error)
 	RestoreMemory(context.Context, RestoreMemoryInput) (domain.Memory, error)

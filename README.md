@@ -9,6 +9,7 @@
 - exact、substring、lexical、semantic 候选通过 hybrid ranking 融合，并返回可检查的 score breakdown。
 - memory mutation 使用 optimistic concurrency；旧版本追加到 immutable revision history。
 - memory、source 和 ingestion 支持 TTL；正常查询直接过滤过期记录，不等待后台 GC。
+- namespace 使用 slash-separated hierarchy；读取默认 exact match，需要包含 descendants 时显式使用 `namespace_match=subtree`。
 - 本地 stdio bridge 读取、hash、上传和 watch 本机 path；中央服务从不读取客户端 filesystem。
 - MCP 使用官方 Go SDK `github.com/modelcontextprotocol/go-sdk v1.7.0`；本地 stdio bridge 保留 verified device identity，并通过中央 typed RPC 跨设备共享数据。
 
@@ -85,7 +86,7 @@ task --taskfile .\Task.yml build VERSION=v0.1.0 REVISION=0123456789abcdef BUILD_
 | `MEMORY_API_TOKEN_FILE` | 无 | token 文件；`MEMORY_API_TOKEN` 为空时读取，适合 MCP controller 避免把 secret 写进 plugin registry |
 | `MEMORY_API_URL` | 无 | 本地 stdio bridge 使用的中央 base URL；`mcp` 必填 |
 | `MEMORY_SIGNAL_HMAC_SECRET` | 无 | hardware signal HMAC secret；`serve` 必填 |
-| `MEMORY_DEFAULT_NAMESPACE` | workspace config | 本机默认 namespace |
+| `MEMORY_DEFAULT_NAMESPACE` | workspace config | 本机默认 namespace path，也是 `namespace_list.parent` 的默认值 |
 | `MEMORY_WORKSPACE_CODE` | workspace config | 本机 workspace identity |
 | `MEMORY_DEFAULT_SCOPE` | `workspace` | 默认 scope |
 | `MEMORY_IDENTITY_FILE` | OS user config directory | installation identity 文件 |
@@ -173,9 +174,9 @@ codex mcp list
 
 也可以在 Codex/ChatGPT desktop 的 `/mcp` 面板检查连接。配置字段参考 [OpenAI 官方 MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
 
-## 23 个 MCP tools
+## 25 个 MCP tools
 
-Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_search` 按语义或文本召回，`memory_list` 无 query 浏览过滤结果，`memory_get` 按 ID/version 精确读取。其余 tools 用于 revision、lifecycle、source ingestion 和 device identity 等高级操作。
+Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_search` 按语义或文本召回，`memory_list` 无 query 浏览过滤结果，`namespace_list` 浏览 namespace tree，`memory_get` 按 ID/version 精确读取。其余 tools 用于 revision、lifecycle、source ingestion 和 device identity 等高级操作。
 
 | Tool | 作用 |
 |---|---|
@@ -184,6 +185,8 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_search` 
 | `memory_get` | 按 ID 读取当前 memory 或指定历史 version |
 | `memory_search` | 执行 exact、substring、lexical、semantic、temporal、metadata 和 hybrid retrieval |
 | `memory_list` | 无需 query，按 scope、type、tag、metadata、lifecycle 和时间过滤浏览 memory |
+| `namespace_list` | 从指定 parent 浏览 namespace tree，并返回 direct/subtree memory 与 source counts |
+| `namespace_delete` | 默认 dry-run 预览 namespace 清理数量；确认后可删除目标或完整 subtree，并停止匹配的本机 watches |
 | `memory_delete` | soft delete memory，保留 revision history |
 | `memory_history` | 分页读取 append-only revisions |
 | `memory_restore` | 将历史 snapshot 恢复为新的 current version |
@@ -202,6 +205,26 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_search` 
 | `device_migrate` | 把 source device 合并到 canonical target，同时保留 provenance |
 | `device_whoami` | 查询当前 installation、device、workspace 与 verified caller identity |
 | `memory_health` | 查询 PostgreSQL 与 embedding provider 状态及 server version |
+
+namespace 是小写 slash-separated path，例如 `memory-recall-coin/android/anti-bot`。`memory_search`、`memory_list` 和 `memory_source_status` 的 `namespace_match` 默认为 `exact`；只有显式传 `subtree` 才包含当前 namespace 的全部 descendants。省略 namespace 或 `namespace_list.parent` 时使用本机 `MEMORY_DEFAULT_NAMESPACE`。scope 仍负责 visibility，namespace hierarchy 不授予或扩展权限。
+
+```json
+{"query":"Frida detection","namespace":"memory-recall-coin/android","namespace_match":"subtree"}
+```
+
+`namespace_list` 是唯一的 namespace discovery tool；namespace 随写入隐式建立，不提供 create/rename tool。默认 `depth=1`、`limit=100`，返回 virtual parent、child count 以及 direct/subtree counts。
+
+```json
+{"parent":"memory-recall-coin/android","depth":2,"limit":100}
+```
+
+`namespace_delete` 的 `namespace` 和 `reason` 必填，且不会为 namespace 套用本机默认值。`dry_run` 默认为 `true`。确认 counts 后必须显式传 `dry_run=false`；`recursive=false` 只处理目标 namespace，存在 active descendants 时返回 `FAILED_PRECONDITION`。`recursive=true` 同时清理 subtree 的 memories/revisions/relations、sources/chunks/content、embeddings/jobs、ingestion roots/jobs、idempotency records 和持久化 watch registrations。通过 stdio MCP 调用时还会预览或停止匹配 namespace 的本机 watches，并单独返回 `affected_watch_ids`。
+
+实际删除是不可逆 hard purge，并保留 namespace tombstone；被删除的 path 及其 descendants 不能被重新创建。其他 stdio 进程中的 watch 在下一次 sync 收到 `FAILED_PRECONDITION` 后自行停止，tombstone 会阻止它们在此之前重新写回数据。
+
+```json
+{"namespace":"memory-recall-coin/android","recursive":true,"dry_run":true,"reason":"preview retired project cleanup"}
+```
 
 `memory_search` 和 `memory_list` 默认返回 `detail_level=compact`，保留 title、snippet、scope、status 与 tags。`memory_search` 额外返回可解释 score；`memory_list` 使用独立的 filter-only response，不携带空 query、candidate diagnostics 或全零 score。需要完整 content、metadata、evidence、device identity 和 source provenance 时显式传 `detail_level=full`。`memory_search.min_relevance` 按返回的 `score.relevance` 在 `0..1` 内过滤低相关结果。
 

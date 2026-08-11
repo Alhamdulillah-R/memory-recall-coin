@@ -33,6 +33,11 @@ const (
 	SearchDetailFull    = "full"
 )
 
+const (
+	NamespaceMatchExact   = "exact"
+	NamespaceMatchSubtree = "subtree"
+)
+
 // CallerIdentity describes the logical device, installation and workspace issuing a request.
 type CallerIdentity struct {
 	DeviceCode       string `json:"device_code,omitempty"`
@@ -219,6 +224,8 @@ type SearchResult struct {
 type SearchResponse struct {
 	Results         []SearchResult `json:"results"`
 	Query           string         `json:"query"`
+	Namespace       string         `json:"namespace"`
+	NamespaceMatch  string         `json:"namespace_match"`
 	ScopeMode       string         `json:"scope_mode"`
 	DetailLevel     string         `json:"detail_level"`
 	SemanticEnabled bool           `json:"semantic_enabled"`
@@ -257,11 +264,13 @@ type MemoryListItem struct {
 
 // MemoryListResponse contains filter-only memory results without retrieval diagnostics.
 type MemoryListResponse struct {
-	Results     []MemoryListItem `json:"results"`
-	Count       int              `json:"count"`
-	ScopeMode   string           `json:"scope_mode"`
-	DetailLevel string           `json:"detail_level"`
-	DurationMS  int64            `json:"duration_ms"`
+	Results        []MemoryListItem `json:"results"`
+	Count          int              `json:"count"`
+	Namespace      string           `json:"namespace"`
+	NamespaceMatch string           `json:"namespace_match"`
+	ScopeMode      string           `json:"scope_mode"`
+	DetailLevel    string           `json:"detail_level"`
+	DurationMS     int64            `json:"duration_ms"`
 }
 
 // NewMemoryListResponse converts a search response into the dedicated list contract.
@@ -297,12 +306,68 @@ func NewMemoryListResponse(response SearchResponse) MemoryListResponse {
 	}
 
 	return MemoryListResponse{
-		Results:     results,
-		Count:       len(results),
-		ScopeMode:   response.ScopeMode,
-		DetailLevel: response.DetailLevel,
-		DurationMS:  response.DurationMS,
+		Results:        results,
+		Count:          len(results),
+		Namespace:      response.Namespace,
+		NamespaceMatch: response.NamespaceMatch,
+		ScopeMode:      response.ScopeMode,
+		DetailLevel:    response.DetailLevel,
+		DurationMS:     response.DurationMS,
 	}
+}
+
+// NamespaceSummary describes one namespace node and its direct or subtree counts.
+type NamespaceSummary struct {
+	Namespace          string     `json:"namespace"`
+	Parent             string     `json:"parent,omitempty"`
+	Segment            string     `json:"segment"`
+	Status             string     `json:"status"`
+	DeletedAt          *time.Time `json:"deleted_at,omitempty"`
+	ChildCount         int        `json:"child_count"`
+	DirectMemoryCount  int64      `json:"direct_memory_count"`
+	SubtreeMemoryCount int64      `json:"subtree_memory_count"`
+	DirectSourceCount  int64      `json:"direct_source_count"`
+	SubtreeSourceCount int64      `json:"subtree_source_count"`
+}
+
+// NamespaceListResponse contains a bounded namespace tree rooted at Parent.
+type NamespaceListResponse struct {
+	Parent     string             `json:"parent"`
+	Depth      int                `json:"depth"`
+	Namespaces []NamespaceSummary `json:"namespaces"`
+	Count      int                `json:"count"`
+	NextCursor string             `json:"next_cursor,omitempty"`
+}
+
+// NamespaceDeleteCounts reports records affected or deleted by one namespace operation.
+type NamespaceDeleteCounts struct {
+	Namespaces           int64 `json:"namespaces"`
+	DescendantNamespaces int64 `json:"descendant_namespaces"`
+	Memories             int64 `json:"memories"`
+	MemoryRevisions      int64 `json:"memory_revisions"`
+	MemoryRelations      int64 `json:"memory_relations"`
+	Sources              int64 `json:"sources"`
+	SourceVersions       int64 `json:"source_versions"`
+	Chunks               int64 `json:"chunks"`
+	Embeddings           int64 `json:"embeddings"`
+	EmbeddingJobs        int64 `json:"embedding_jobs"`
+	IngestionRoots       int64 `json:"ingestion_roots"`
+	IngestionJobs        int64 `json:"ingestion_jobs"`
+	SourceContents       int64 `json:"source_contents"`
+	IdempotencyRecords   int64 `json:"idempotency_records"`
+	WatchRegistrations   int64 `json:"watch_registrations"`
+}
+
+// NamespaceDeleteResult reports a namespace deletion preview or completed cleanup.
+type NamespaceDeleteResult struct {
+	Namespace         string                `json:"namespace"`
+	Recursive         bool                  `json:"recursive"`
+	DryRun            bool                  `json:"dry_run"`
+	Deleted           bool                  `json:"deleted"`
+	RequiresRecursive bool                  `json:"requires_recursive"`
+	Counts            NamespaceDeleteCounts `json:"counts"`
+	AffectedWatchIDs  []string              `json:"affected_watch_ids,omitempty"`
+	Warnings          []string              `json:"warnings,omitempty"`
 }
 
 // IngestedFile carries local file content to the central source index.
@@ -335,6 +400,8 @@ type IngestionSummary struct {
 // SourceStatus reports source and embedding state for an ingestion path.
 type SourceStatus struct {
 	Sources           []Source `json:"sources"`
+	Namespace         string   `json:"namespace"`
+	NamespaceMatch    string   `json:"namespace_match"`
 	PendingEmbeddings int      `json:"pending_embeddings"`
 	FailedEmbeddings  int      `json:"failed_embeddings"`
 }

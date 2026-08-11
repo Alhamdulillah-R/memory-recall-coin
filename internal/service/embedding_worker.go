@@ -43,16 +43,27 @@ func (s *Store) ReconcileEmbeddingJobs(ctx context.Context) error {
 		return WrapError(CodeUnavailable, "begin embedding reconciliation", err)
 	}
 	defer rollback(tx)
+	if err := lockActiveNamespaceHierarchies(ctx, tx); err != nil {
+		return err
+	}
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE memories SET embedding = NULL, embedding_model = NULL, embedded_at = NULL
 		WHERE embedding IS NOT NULL AND embedding_model IS DISTINCT FROM $1
+		  AND EXISTS (
+			SELECT 1 FROM namespaces n
+			WHERE n.code = memories.namespace AND n.lifecycle_status = 'active'
+		  )
 	`, s.embeddingProviderName); err != nil {
 		return WrapError(CodeInternal, "clear stale memory embeddings", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE source_chunks SET embedding = NULL, embedding_model = NULL, embedded_at = NULL
 		WHERE embedding IS NOT NULL AND embedding_model IS DISTINCT FROM $1
+		  AND EXISTS (
+			SELECT 1 FROM namespaces n
+			WHERE n.code = source_chunks.namespace AND n.lifecycle_status = 'active'
+		  )
 	`, s.embeddingProviderName); err != nil {
 		return WrapError(CodeInternal, "clear stale source embeddings", err)
 	}
@@ -65,8 +76,9 @@ func (s *Store) ReconcileEmbeddingJobs(ctx context.Context) error {
 			'memory', id, namespace,
 			encode(digest(title || E'\n' || content, 'sha256'), 'hex'),
 			$1, 'pending', statement_timestamp()
-		FROM memories
-		WHERE lifecycle_status <> 'deleted' AND embedding IS NULL
+		FROM memories m
+		JOIN namespaces n ON n.code = m.namespace AND n.lifecycle_status = 'active'
+		WHERE m.lifecycle_status <> 'deleted' AND m.embedding IS NULL
 		ON CONFLICT (target_type, target_id) DO UPDATE SET
 			namespace = excluded.namespace,
 			content_hash = excluded.content_hash,
@@ -88,6 +100,7 @@ func (s *Store) ReconcileEmbeddingJobs(ctx context.Context) error {
 			$1, 'pending', statement_timestamp()
 		FROM source_chunks c
 		JOIN sources s ON s.current_content_id = c.content_id
+		JOIN namespaces n ON n.code = c.namespace AND n.lifecycle_status = 'active'
 		WHERE s.lifecycle_status <> 'deleted' AND c.embedding IS NULL
 		ON CONFLICT (target_type, target_id) DO UPDATE SET
 			namespace = excluded.namespace,

@@ -139,6 +139,10 @@ func (s *Server) dispatch(ctx context.Context, request incomingRPCRequest) (any,
 		return dispatchInput(ctx, request, s.backend.SearchMemory)
 	case "memory_list":
 		return dispatchInput(ctx, request, s.backend.ListMemory)
+	case "namespace_list":
+		return dispatchInput(ctx, request, s.backend.ListNamespaces)
+	case "namespace_delete":
+		return dispatchInput(ctx, request, s.backend.DeleteNamespace)
 	case "memory_delete":
 		return dispatchInput(ctx, request, s.backend.DeleteMemory)
 	case "memory_history":
@@ -213,6 +217,10 @@ func applyCaller(input any, caller domain.CallerIdentity) {
 	case *service.SearchMemoryInput:
 		value.Caller = caller
 	case *service.ListMemoryInput:
+		value.Caller = caller
+	case *service.NamespaceListInput:
+		value.Caller = caller
+	case *service.NamespaceDeleteInput:
 		value.Caller = caller
 	case *service.DeleteMemoryInput:
 		value.Caller = caller
@@ -411,6 +419,8 @@ func writeRPCError(response http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case service.CodeConflict, service.CodeAlreadyExists:
 		status = http.StatusConflict
+	case service.CodeFailedPrecondition:
+		status = http.StatusPreconditionFailed
 	case service.CodeUnavailable:
 		status = http.StatusServiceUnavailable
 	}

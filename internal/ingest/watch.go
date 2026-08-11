@@ -143,7 +143,8 @@ func (m *Manager) Watch(
 	ctx context.Context,
 	input service.SyncSourcesInput,
 ) (WatchInfo, error) {
-	if strings.TrimSpace(input.Namespace) == "" {
+	input.Namespace = strings.ToLower(strings.TrimSpace(input.Namespace))
+	if input.Namespace == "" {
 		return WatchInfo{}, errors.New("namespace is required for path watch")
 	}
 
@@ -456,6 +457,18 @@ func (m *Manager) runWatchSync(job *watchJob) {
 				if job.ctx.Err() != nil {
 					return
 				}
+				if namespaceDeleted(err) {
+					job.recordError(err)
+					m.detachWatch(job)
+					job.cancel()
+					m.logger.Printf(
+						"[Warning] stop watch for deleted namespace: watch_id=%s namespace=%q",
+						job.id,
+						job.input.Namespace,
+					)
+
+					return
+				}
 
 				job.recordError(err)
 				m.logger.Printf(
@@ -545,6 +558,28 @@ func (m *Manager) removeWatch(id string) (*watchJob, error) {
 	delete(m.pathKeys, job.key)
 
 	return job, nil
+}
+
+func (m *Manager) detachWatch(job *watchJob) {
+	m.mu.Lock()
+	if current, exists := m.watches[job.id]; exists && current == job {
+		delete(m.watches, job.id)
+		delete(m.pathKeys, job.key)
+	}
+	m.mu.Unlock()
+}
+
+func namespaceDeleted(err error) bool {
+	var serviceErr *service.Error
+	if !errors.As(err, &serviceErr) || serviceErr.Code != service.CodeFailedPrecondition {
+		return false
+	}
+	if serviceErr.Details == nil {
+		return false
+	}
+
+	_, deleted := serviceErr.Details["deleted_namespace"]
+	return deleted
 }
 
 func (j *watchJob) addInitialWatchTargets() error {
@@ -690,7 +725,7 @@ func (j *watchJob) snapshot() WatchInfo {
 }
 
 func makeWatchKey(namespace string, rootPath string) string {
-	return strings.TrimSpace(namespace) + "\x00" + comparablePath(rootPath)
+	return strings.ToLower(strings.TrimSpace(namespace)) + "\x00" + comparablePath(rootPath)
 }
 
 func comparablePath(path string) string {

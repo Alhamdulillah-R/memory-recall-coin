@@ -16,7 +16,9 @@ import (
 	"github.com/Alhamdulillah-R/memory-recall-coin/internal/domain"
 )
 
-var namespacePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{1,126}[a-z0-9]$`)
+const namespaceMaxLength = 128
+
+var namespaceSegmentPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$`)
 
 var memoryTypes = map[string]struct{}{
 	"fact": {}, "experiment": {}, "hypothesis": {}, "decision": {},
@@ -33,11 +35,40 @@ func NewID(prefix string) string {
 }
 
 func validateNamespace(namespace string) error {
-	if !namespacePattern.MatchString(namespace) {
-		return NewError(CodeInvalidArgument, "namespace must match ^[a-z0-9][a-z0-9._-]{1,126}[a-z0-9]$")
+	if namespace == "" || len(namespace) > namespaceMaxLength {
+		return NewError(CodeInvalidArgument, "namespace must contain 1 to 128 characters")
+	}
+
+	segments := strings.Split(namespace, "/")
+	for _, segment := range segments {
+		if !namespaceSegmentPattern.MatchString(segment) {
+			return NewError(
+				CodeInvalidArgument,
+				"namespace must be a slash-separated lowercase path with alphanumeric segment boundaries",
+			)
+		}
 	}
 
 	return nil
+}
+
+func normalizeNamespace(namespace string) (string, error) {
+	namespace = strings.ToLower(strings.TrimSpace(namespace))
+	if err := validateNamespace(namespace); err != nil {
+		return "", err
+	}
+
+	return namespace, nil
+}
+
+func namespaceAncestors(namespace string) []string {
+	segments := strings.Split(namespace, "/")
+	ancestors := make([]string, 0, len(segments))
+	for index := range segments {
+		ancestors = append(ancestors, strings.Join(segments[:index+1], "/"))
+	}
+
+	return ancestors
 }
 
 func validateScope(scopeType, scopeID string, caller domain.CallerIdentity, namespace string) (string, string, error) {

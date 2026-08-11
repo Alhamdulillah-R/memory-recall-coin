@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,18 +25,20 @@ type Options struct {
 	Version          string
 	Logger           *slog.Logger
 	IngestionManager *ingest.Manager
+	DefaultNamespace string
 }
 
 // Handlers connects MCP tools to the typed service backend.
 type Handlers struct {
 	backend          service.Backend
 	ingestionManager *ingest.Manager
+	defaultNamespace string
 }
 
 // IngestPathInput describes a local path scan without exposing internal file payloads.
 type IngestPathInput struct {
 	Path         string     `json:"path" jsonschema:"local absolute file or directory path"`
-	Namespace    string     `json:"namespace,omitempty" jsonschema:"project namespace; configured workspace default may be used when omitted"`
+	Namespace    string     `json:"namespace,omitempty" jsonschema:"slash-separated namespace path; configured workspace default may be used when omitted"`
 	ScopeType    string     `json:"scope_type,omitempty" jsonschema:"installation, device, workspace, project, or global"`
 	ScopeID      string     `json:"scope_id,omitempty"`
 	TTLSeconds   *int64     `json:"ttl_seconds,omitempty"`
@@ -103,12 +106,13 @@ func New(backend service.Backend, options Options) *mcp.Server {
 	handlers := &Handlers{
 		backend:          backend,
 		ingestionManager: options.IngestionManager,
+		defaultNamespace: strings.ToLower(strings.TrimSpace(options.DefaultNamespace)),
 	}
 
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "memory-recall-coin", Version: options.Version},
 		&mcp.ServerOptions{
-			Instructions: `Primary workflow: memory_put records durable knowledge, memory_search recalls by meaning or text, memory_list browses by filters without a query, and memory_get reads one exact ID or version. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths.`,
+			Instructions: `Primary workflow: memory_put records durable knowledge, memory_search recalls by meaning or text, memory_list browses by filters without a query, and memory_get reads one exact ID or version. Namespaces are slash-separated paths; namespace_match defaults to exact, while subtree explicitly includes descendants. Use namespace_list to discover children. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths.`,
 			Logger:       logger,
 			PageSize:     100,
 		},
@@ -125,6 +129,8 @@ func addTools(server *mcp.Server, handlers *Handlers) {
 	addTypedTool(server, tool("memory_get", "Read a current memory or historical version by ID.", true, true, false), handlers.getMemory)
 	addTypedTool(server, tool("memory_search", "Recall relevant memories and source chunks by exact, substring, lexical, semantic or hybrid retrieval.", true, true, false), handlers.searchMemory)
 	addTypedTool(server, tool("memory_list", "Browse memories by scope, type, tags, metadata, lifecycle and time filters without a query.", true, true, false), handlers.listMemory)
+	addTypedTool(server, tool("namespace_list", "Browse child namespaces and direct versus subtree memory and source counts.", true, true, false), handlers.namespaceList)
+	addTypedTool(server, tool("namespace_delete", "Preview or delete one namespace; recursive deletion also removes its complete subtree and matching local watches.", false, true, true), handlers.deleteNamespace)
 	addTypedTool(server, tool("memory_delete", "Soft-delete a memory while preserving immutable revision history.", false, true, true), handlers.deleteMemory)
 	addTypedTool(server, tool("memory_history", "List append-only revisions for a memory.", true, true, false), handlers.history)
 	addTypedTool(server, tool("memory_restore", "Restore a historical snapshot as a new current version.", false, true, false), handlers.restoreMemory)
@@ -166,6 +172,9 @@ func addTypedTool[Input, Output any](
 	repairRawJSONProperties(inputSchema)
 	repairRawJSONProperties(outputSchema)
 	relaxLocalInputDefaults(inputSchema)
+	if definition.Name == "namespace_delete" {
+		requireInputProperties(inputSchema, "namespace", "reason")
+	}
 	applyInputSchemaConstraints(definition.Name, inputSchema)
 	definition.InputSchema = inputSchema
 	definition.OutputSchema = &jsonschema.Schema{
@@ -256,7 +265,31 @@ func relaxLocalInputDefaults(schema *jsonschema.Schema) {
 	}
 }
 
+func requireInputProperties(schema *jsonschema.Schema, names ...string) {
+	if schema == nil {
+		return
+	}
+
+	for _, name := range names {
+		if _, exists := schema.Properties[name]; !exists {
+			continue
+		}
+
+		required := false
+		for _, requiredName := range schema.Required {
+			if requiredName == name {
+				required = true
+				break
+			}
+		}
+		if !required {
+			schema.Required = append(schema.Required, name)
+		}
+	}
+}
+
 func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
+	setNamespacePropertyConstraints(schema, "namespace", "parent", "cursor")
 	setPropertyEnum(schema, "scope_type", []string{
 		domain.ScopeInstallation,
 		domain.ScopeDevice,
@@ -276,6 +309,10 @@ func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
 		"substring",
 		"lexical",
 		"semantic",
+	})
+	setPropertyEnum(schema, "namespace_match", []string{
+		domain.NamespaceMatchExact,
+		domain.NamespaceMatchSubtree,
 	})
 	setPropertyEnum(schema, "detail_level", []string{"compact", "full"})
 	setPropertyEnum(schema, "verification_state", []string{
@@ -304,6 +341,12 @@ func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
 		setNumericPropertyRange(schema, "candidate_limit", 10, 500)
 	case "memory_list":
 		setNumericPropertyRange(schema, "limit", 1, 100)
+	case "namespace_list":
+		setNumericPropertyRange(schema, "depth", 1, 16)
+		setNumericPropertyRange(schema, "limit", 1, 200)
+	case "namespace_delete":
+		setPropertyDefault(schema, "recursive", json.RawMessage("false"))
+		setPropertyDefault(schema, "dry_run", json.RawMessage("true"))
 	case "memory_history", "memory_source_status":
 		setNumericPropertyRange(schema, "limit", 1, 200)
 	}
@@ -323,6 +366,30 @@ func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
 	case "memory_ingest_path":
 		setPropertyEnum(schema, "watch_mode", []string{"once", "sync", "watch"})
 	}
+}
+
+func setNamespacePropertyConstraints(schema *jsonschema.Schema, propertyNames ...string) {
+	const pattern = `^[a-z0-9]([a-z0-9._-]*[a-z0-9])?(/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)*$`
+	maxLength := 128
+	walkSchema(schema, func(current *jsonschema.Schema) {
+		for _, propertyName := range propertyNames {
+			property, exists := current.Properties[propertyName]
+			if !exists {
+				continue
+			}
+			property.Pattern = pattern
+			property.MaxLength = &maxLength
+		}
+	})
+}
+
+func setPropertyDefault(schema *jsonschema.Schema, propertyName string, value json.RawMessage) {
+	walkSchema(schema, func(current *jsonschema.Schema) {
+		property, exists := current.Properties[propertyName]
+		if exists {
+			property.Default = value
+		}
+	})
 }
 
 func setPropertyEnum(schema *jsonschema.Schema, propertyName string, values []string) {
@@ -552,6 +619,97 @@ func (h *Handlers) listMemory(ctx context.Context, _ *mcp.CallToolRequest, input
 	return nil, result, err
 }
 
+func (h *Handlers) namespaceList(ctx context.Context, _ *mcp.CallToolRequest, input service.NamespaceListInput) (*mcp.CallToolResult, domain.NamespaceListResponse, error) {
+	result, err := h.backend.ListNamespaces(ctx, input)
+	return nil, result, err
+}
+
+func (h *Handlers) deleteNamespace(ctx context.Context, _ *mcp.CallToolRequest, input service.NamespaceDeleteInput) (*mcp.CallToolResult, domain.NamespaceDeleteResult, error) {
+	if h.ingestionManager == nil {
+		result, err := h.backend.DeleteNamespace(ctx, input)
+		return nil, result, err
+	}
+
+	if input.ShouldDryRun() {
+		result, err := h.backend.DeleteNamespace(ctx, input)
+		if err != nil {
+			return nil, domain.NamespaceDeleteResult{}, err
+		}
+		attachAffectedWatches(&result, namespaceWatchIDs(
+			h.ingestionManager.List(),
+			result.Namespace,
+			input.Recursive,
+		))
+
+		return nil, result, nil
+	}
+
+	previewInput := input
+	previewInput.DryRun = &boolTrue
+	preview, err := h.backend.DeleteNamespace(ctx, previewInput)
+	if err != nil {
+		return nil, domain.NamespaceDeleteResult{}, err
+	}
+	if preview.RequiresRecursive {
+		serviceErr := service.NewError(
+			service.CodeFailedPrecondition,
+			"namespace has active descendants; retry with recursive=true",
+		)
+		serviceErr.Details = map[string]any{
+			"namespace":             preview.Namespace,
+			"descendant_namespaces": preview.Counts.DescendantNamespaces,
+			"dry_run":               true,
+		}
+
+		return nil, domain.NamespaceDeleteResult{}, serviceErr
+	}
+	result, err := h.backend.DeleteNamespace(ctx, input)
+	if err != nil {
+		return nil, domain.NamespaceDeleteResult{}, err
+	}
+
+	watchIDs := namespaceWatchIDs(h.ingestionManager.List(), result.Namespace, input.Recursive)
+	stoppedWatchIDs := make([]string, 0, len(watchIDs))
+	for _, watchID := range watchIDs {
+		if err := h.ingestionManager.Stop(watchID); err != nil {
+			if errors.Is(err, ingest.ErrWatchNotFound) {
+				stoppedWatchIDs = append(stoppedWatchIDs, watchID)
+				continue
+			}
+			result.Warnings = append(
+				result.Warnings,
+				fmt.Sprintf("local watch %s could not be stopped: %v", watchID, err),
+			)
+			continue
+		}
+		stoppedWatchIDs = append(stoppedWatchIDs, watchID)
+	}
+	attachAffectedWatches(&result, stoppedWatchIDs)
+
+	return nil, result, nil
+}
+
+func namespaceWatchIDs(watches []ingest.WatchInfo, namespace string, recursive bool) []string {
+	target := strings.ToLower(strings.TrimSpace(namespace))
+	result := make([]string, 0)
+	for _, watch := range watches {
+		candidate := strings.ToLower(strings.TrimSpace(watch.Namespace))
+		matches := candidate == target
+		if recursive && strings.HasPrefix(candidate, target+"/") {
+			matches = true
+		}
+		if matches {
+			result = append(result, watch.ID)
+		}
+	}
+
+	return result
+}
+
+func attachAffectedWatches(result *domain.NamespaceDeleteResult, watchIDs []string) {
+	result.AffectedWatchIDs = watchIDs
+}
+
 func (h *Handlers) deleteMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.DeleteMemoryInput) (*mcp.CallToolResult, domain.Memory, error) {
 	result, err := h.backend.DeleteMemory(ctx, input)
 	return nil, result, err
@@ -614,8 +772,12 @@ func (h *Handlers) ingestPath(ctx context.Context, _ *mcp.CallToolRequest, input
 	if input.Recursive != nil {
 		recursive = *input.Recursive
 	}
+	namespace := strings.ToLower(strings.TrimSpace(input.Namespace))
+	if namespace == "" {
+		namespace = h.defaultNamespace
+	}
 	syncInput := service.SyncSourcesInput{
-		Namespace:    input.Namespace,
+		Namespace:    namespace,
 		ScopeType:    input.ScopeType,
 		ScopeID:      input.ScopeID,
 		RootPath:     input.Path,

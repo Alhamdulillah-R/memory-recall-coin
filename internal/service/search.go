@@ -108,6 +108,8 @@ func (s *Store) SearchMemory(ctx context.Context, input SearchMemoryInput) (doma
 	return domain.SearchResponse{
 		Results:         fused,
 		Query:           normalized.Query,
+		Namespace:       normalized.Namespace,
+		NamespaceMatch:  normalized.NamespaceMatch,
 		ScopeMode:       normalized.ScopeMode,
 		DetailLevel:     normalized.DetailLevel,
 		SemanticEnabled: semanticEnabled,
@@ -135,9 +137,18 @@ func (s *Store) ListMemory(ctx context.Context, input ListMemoryInput) (domain.M
 }
 
 func normalizeSearchInput(input SearchMemoryInput) (SearchMemoryInput, error) {
-	input.Namespace = strings.ToLower(strings.TrimSpace(input.Namespace))
-	if err := validateNamespace(input.Namespace); err != nil {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
 		return SearchMemoryInput{}, err
+	}
+	input.Namespace = namespace
+	if input.NamespaceMatch == "" {
+		input.NamespaceMatch = domain.NamespaceMatchExact
+	}
+	switch input.NamespaceMatch {
+	case domain.NamespaceMatchExact, domain.NamespaceMatchSubtree:
+	default:
+		return SearchMemoryInput{}, NewError(CodeInvalidArgument, "namespace_match must be exact or subtree")
 	}
 	input.Query = strings.TrimSpace(input.Query)
 	if input.Query == "" && input.RetrievalMode != "list" {
@@ -307,6 +318,8 @@ func (s *Store) listMemory(
 	return domain.SearchResponse{
 		Results:         results,
 		Query:           input.Query,
+		Namespace:       input.Namespace,
+		NamespaceMatch:  input.NamespaceMatch,
 		ScopeMode:       input.ScopeMode,
 		DetailLevel:     input.DetailLevel,
 		SemanticEnabled: s.embedding != nil && s.embedding.Enabled(),
@@ -611,8 +624,7 @@ func (s *Store) querySourceSemantic(ctx context.Context, input SearchMemoryInput
 }
 
 func buildMemoryFilters(input SearchMemoryInput, alias string, args []any) (string, []any, error) {
-	conditions := []string{alias + ".namespace = $" + fmt.Sprint(len(args)+1)}
-	args = append(args, input.Namespace)
+	conditions, args := appendNamespaceFilter(nil, args, alias+".namespace", input.Namespace, input.NamespaceMatch)
 	if !input.IncludeDeleted {
 		conditions = append(conditions, alias+".lifecycle_status <> 'deleted'")
 	}
@@ -659,8 +671,7 @@ func buildMemoryFilters(input SearchMemoryInput, alias string, args []any) (stri
 }
 
 func buildSourceFilters(input SearchMemoryInput, alias string, args []any) (string, []any, error) {
-	conditions := []string{alias + ".namespace = $" + fmt.Sprint(len(args)+1)}
-	args = append(args, input.Namespace)
+	conditions, args := appendNamespaceFilter(nil, args, alias+".namespace", input.Namespace, input.NamespaceMatch)
 	if input.IncludeDeleted {
 		conditions = append(conditions, alias+".lifecycle_status IN ('active', 'deleted')")
 	} else {
@@ -687,6 +698,27 @@ func buildSourceFilters(input SearchMemoryInput, alias string, args []any) (stri
 	conditions, args = appendTimeFilter(conditions, args, alias+".mtime", input.ObservedAfter, input.ObservedBefore)
 
 	return strings.Join(conditions, " AND "), args, nil
+}
+
+func appendNamespaceFilter(
+	conditions []string,
+	args []any,
+	column string,
+	namespace string,
+	namespaceMatch string,
+) ([]string, []any) {
+	args = append(args, namespace)
+	exactPlaceholder := "$" + fmt.Sprint(len(args))
+	if namespaceMatch != domain.NamespaceMatchSubtree {
+		return append(conditions, column+" = "+exactPlaceholder), args
+	}
+
+	args = append(args, escapeLikePattern(namespace)+"/%")
+	subtreePlaceholder := "$" + fmt.Sprint(len(args))
+	condition := "(" + column + " = " + exactPlaceholder + " OR " +
+		column + " LIKE " + subtreePlaceholder + ` ESCAPE E'\\')`
+
+	return append(conditions, condition), args
 }
 
 func appendScopeFilter(conditions []string, args []any, input SearchMemoryInput, alias string) ([]string, []any) {
