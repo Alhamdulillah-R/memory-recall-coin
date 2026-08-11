@@ -206,20 +206,25 @@ func repairRawJSONProperties(schema *jsonschema.Schema) {
 	}
 
 	for name, property := range schema.Properties {
-		switch name {
-		case "metadata", "metadata_merge", "before_snapshot", "after_snapshot":
-			schema.Properties[name] = nullableJSONObject(property.Description)
-		case "evidence":
-			schema.Properties[name] = &jsonschema.Schema{
-				Types:       []string{"null", "array"},
-				Description: property.Description,
-				Items:       &jsonschema.Schema{},
+		if isRawJSONSchema(property) {
+			switch name {
+			case "metadata", "metadata_merge", "before_snapshot", "after_snapshot":
+				schema.Properties[name] = nullableJSONObject(property.Description)
+				continue
+			case "evidence":
+				schema.Properties[name] = &jsonschema.Schema{
+					Types:       []string{"null", "array"},
+					Description: property.Description,
+					Items:       &jsonschema.Schema{},
+				}
+				continue
+			case "source_range":
+				schema.Properties[name] = nullableSourceRange(property.Description)
+				continue
 			}
-		case "source_range":
-			schema.Properties[name] = nullableSourceRange(property.Description)
-		default:
-			repairRawJSONProperties(property)
 		}
+
+		repairRawJSONProperties(property)
 	}
 	for _, definition := range schema.Defs {
 		repairRawJSONProperties(definition)
@@ -243,6 +248,23 @@ func repairRawJSONProperties(schema *jsonschema.Schema) {
 	for _, item := range schema.OneOf {
 		repairRawJSONProperties(item)
 	}
+}
+
+func isRawJSONSchema(schema *jsonschema.Schema) bool {
+	if schema == nil || schema.Items == nil || schema.Items.Type != "integer" {
+		return false
+	}
+	if schema.Type == "array" {
+		return true
+	}
+
+	for _, schemaType := range schema.Types {
+		if schemaType == "array" {
+			return true
+		}
+	}
+
+	return false
 }
 
 func nullableJSONObject(description string) *jsonschema.Schema {
