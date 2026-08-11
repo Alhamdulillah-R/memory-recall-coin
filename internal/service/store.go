@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -106,7 +107,9 @@ func lockIdempotency(
 	if err != nil {
 		return false, "", WrapError(CodeInternal, "hash idempotent request", err)
 	}
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", namespace+"\x00"+actor+"\x00"+key); err != nil {
+	lockDigest := sha256.Sum256([]byte(namespace + "\x00" + actor + "\x00" + key))
+	lockKey := int64(binary.BigEndian.Uint64(lockDigest[:8]))
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", lockKey); err != nil {
 		return false, "", WrapError(CodeInternal, "lock idempotent request", err)
 	}
 
