@@ -142,6 +142,8 @@ spec:
               value: "1"
             - name: HOME
               value: /runner-state/home
+            - name: GOFLAGS
+              value: -modcacherw
             - name: RUNNER_TOOL_CACHE
               value: /runner-state/app/_work/_tool
             - name: TMPDIR
