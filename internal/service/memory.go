@@ -67,11 +67,12 @@ type memorySnapshot struct {
  * @return created memory or an error
  */
 func (s *Store) PutMemory(ctx context.Context, input PutMemoryInput) (domain.Memory, error) {
-	namespace, err := normalizeNamespace(input.Namespace)
+	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
 	if err != nil {
 		return domain.Memory{}, err
 	}
 	input.Namespace = namespace
+	input.NamespaceSequence = nil
 	idempotencyInput := input
 	normalized, err := normalizePutInput(input)
 	if err != nil {
@@ -265,11 +266,12 @@ func (s *Store) insertMemoryTx(
  * @return updated memory or a version conflict
  */
 func (s *Store) PatchMemory(ctx context.Context, input PatchMemoryInput) (domain.Memory, error) {
-	namespace, err := normalizeNamespace(input.Namespace)
+	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
 	if err != nil {
 		return domain.Memory{}, err
 	}
 	input.Namespace = namespace
+	input.NamespaceSequence = nil
 	if input.ExpectedVersion < 1 {
 		return domain.Memory{}, NewError(CodeInvalidArgument, "expected_version must be positive")
 	}
@@ -424,11 +426,12 @@ func (s *Store) PatchMemory(ctx context.Context, input PatchMemoryInput) (domain
  * @return memory, or NOT_FOUND when hidden by lifecycle/TTL filters
  */
 func (s *Store) GetMemory(ctx context.Context, input GetMemoryInput) (domain.Memory, error) {
-	namespace, err := normalizeNamespace(input.Namespace)
+	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
 	if err != nil {
 		return domain.Memory{}, err
 	}
 	input.Namespace = namespace
+	input.NamespaceSequence = nil
 	if input.Version != nil {
 		var snapshot []byte
 		err := s.pool.QueryRow(ctx, `
@@ -565,11 +568,12 @@ func (s *Store) memoryNotFoundError(
  * @return deleted current version
  */
 func (s *Store) DeleteMemory(ctx context.Context, input DeleteMemoryInput) (domain.Memory, error) {
-	namespace, err := normalizeNamespace(input.Namespace)
+	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
 	if err != nil {
 		return domain.Memory{}, err
 	}
 	input.Namespace = namespace
+	input.NamespaceSequence = nil
 	actor := normalizeActor(input.Actor, input.Caller)
 	return s.updateLifecycle(
 		ctx,
@@ -590,11 +594,12 @@ func (s *Store) DeleteMemory(ctx context.Context, input DeleteMemoryInput) (doma
  * @return revision page
  */
 func (s *Store) History(ctx context.Context, input HistoryInput) ([]domain.Revision, error) {
-	namespace, err := normalizeNamespace(input.Namespace)
+	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
 	if err != nil {
 		return nil, err
 	}
 	input.Namespace = namespace
+	input.NamespaceSequence = nil
 	if input.Limit <= 0 {
 		input.Limit = 50
 	}
@@ -646,11 +651,12 @@ func (s *Store) History(ctx context.Context, input HistoryInput) ([]domain.Revis
  * @return restored current memory
  */
 func (s *Store) RestoreMemory(ctx context.Context, input RestoreMemoryInput) (domain.Memory, error) {
-	namespace, err := normalizeNamespace(input.Namespace)
+	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
 	if err != nil {
 		return domain.Memory{}, err
 	}
 	input.Namespace = namespace
+	input.NamespaceSequence = nil
 	if err := requireNonEmpty("memory_id", input.ID); err != nil {
 		return domain.Memory{}, err
 	}
@@ -776,11 +782,12 @@ func (s *Store) RestoreMemory(ctx context.Context, input RestoreMemoryInput) (do
  * @return replacement memory
  */
 func (s *Store) SupersedeMemory(ctx context.Context, input SupersedeMemoryInput) (domain.Memory, error) {
-	namespace, err := normalizeNamespace(input.Namespace)
+	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
 	if err != nil {
 		return domain.Memory{}, err
 	}
 	input.Namespace = namespace
+	input.NamespaceSequence = nil
 	idempotencyInput := input
 	if err := requireNonEmpty("target_memory_id", input.TargetID); err != nil {
 		return domain.Memory{}, err
@@ -789,6 +796,7 @@ func (s *Store) SupersedeMemory(ctx context.Context, input SupersedeMemoryInput)
 		return domain.Memory{}, NewError(CodeInvalidArgument, "expected_version must be positive")
 	}
 	input.Replacement.Namespace = input.Namespace
+	input.Replacement.NamespaceSequence = nil
 	input.Replacement.Caller = input.Caller
 	replacement, err := normalizePutInput(input.Replacement)
 	if err != nil {
@@ -886,11 +894,12 @@ func (s *Store) SupersedeMemory(ctx context.Context, input SupersedeMemoryInput)
  * @return refuted current memory
  */
 func (s *Store) RefuteMemory(ctx context.Context, input RefuteMemoryInput) (domain.Memory, error) {
-	namespace, err := normalizeNamespace(input.Namespace)
+	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
 	if err != nil {
 		return domain.Memory{}, err
 	}
 	input.Namespace = namespace
+	input.NamespaceSequence = nil
 	if err := requireNonEmpty("target_memory_id", input.TargetID); err != nil {
 		return domain.Memory{}, err
 	}
@@ -991,11 +1000,12 @@ func (s *Store) RefuteMemory(ctx context.Context, input RefuteMemoryInput) (doma
  * @return updated memory
  */
 func (s *Store) TouchMemory(ctx context.Context, input TouchMemoryInput) (domain.Memory, error) {
-	namespace, err := normalizeNamespace(input.Namespace)
+	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
 	if err != nil {
 		return domain.Memory{}, err
 	}
 	input.Namespace = namespace
+	input.NamespaceSequence = nil
 	if err := requireNonEmpty("memory_id", input.ID); err != nil {
 		return domain.Memory{}, err
 	}

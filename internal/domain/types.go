@@ -319,6 +319,7 @@ func NewMemoryListResponse(response SearchResponse) MemoryListResponse {
 // NamespaceSummary describes one namespace node and its direct or subtree counts.
 type NamespaceSummary struct {
 	Namespace          string     `json:"namespace"`
+	Sequence           int64      `json:"sequence"`
 	Parent             string     `json:"parent,omitempty"`
 	Segment            string     `json:"segment"`
 	Status             string     `json:"status"`

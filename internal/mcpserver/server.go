@@ -32,33 +32,34 @@ type Options struct {
 type Handlers struct {
 	backend          service.Backend
 	ingestionManager *ingest.Manager
-	defaultNamespace string
 }
 
 // IngestPathInput describes a local path scan without exposing internal file payloads.
 type IngestPathInput struct {
-	Path         string     `json:"path" jsonschema:"local absolute file or directory path"`
-	Namespace    string     `json:"namespace,omitempty" jsonschema:"slash-separated namespace path; configured workspace default may be used when omitted"`
-	ScopeType    string     `json:"scope_type,omitempty" jsonschema:"installation, device, workspace, project, or global"`
-	ScopeID      string     `json:"scope_id,omitempty"`
-	TTLSeconds   *int64     `json:"ttl_seconds,omitempty"`
-	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
-	Recursive    *bool      `json:"recursive,omitempty"`
-	Include      []string   `json:"include,omitempty" jsonschema:"doublestar include globs relative to path"`
-	Exclude      []string   `json:"exclude,omitempty" jsonschema:"doublestar exclude globs relative to path"`
-	WatchMode    string     `json:"watch_mode,omitempty" jsonschema:"once, sync, or watch"`
-	Parser       string     `json:"parser,omitempty" jsonschema:"auto, text, markdown, or caller-defined parser label"`
-	PruneMissing *bool      `json:"prune_missing,omitempty" jsonschema:"remove server indexes absent from a complete manifest; defaults true for sync/watch"`
+	Path              string     `json:"path" jsonschema:"local absolute file or directory path"`
+	Namespace         string     `json:"namespace,omitempty" jsonschema:"slash-separated namespace path; mutually exclusive with namespace_sequence"`
+	NamespaceSequence *int64     `json:"namespace_sequence,omitempty" jsonschema:"stable namespace sequence; mutually exclusive with namespace"`
+	ScopeType         string     `json:"scope_type,omitempty" jsonschema:"installation, device, workspace, project, or global"`
+	ScopeID           string     `json:"scope_id,omitempty"`
+	TTLSeconds        *int64     `json:"ttl_seconds,omitempty"`
+	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
+	Recursive         *bool      `json:"recursive,omitempty"`
+	Include           []string   `json:"include,omitempty" jsonschema:"doublestar include globs relative to path"`
+	Exclude           []string   `json:"exclude,omitempty" jsonschema:"doublestar exclude globs relative to path"`
+	WatchMode         string     `json:"watch_mode,omitempty" jsonschema:"once, sync, or watch"`
+	Parser            string     `json:"parser,omitempty" jsonschema:"auto, text, markdown, or caller-defined parser label"`
+	PruneMissing      *bool      `json:"prune_missing,omitempty" jsonschema:"remove server indexes absent from a complete manifest; defaults true for sync/watch"`
 }
 
 // PinMemoryInput clears expiration using optimistic concurrency.
 type PinMemoryInput struct {
-	Namespace       string `json:"namespace"`
-	MemoryID        string `json:"memory_id"`
-	ExpectedVersion int64  `json:"expected_version"`
-	Reason          string `json:"reason,omitempty"`
-	Actor           string `json:"actor,omitempty"`
-	IdempotencyKey  string `json:"idempotency_key,omitempty"`
+	Namespace         string `json:"namespace,omitempty"`
+	NamespaceSequence *int64 `json:"namespace_sequence,omitempty"`
+	MemoryID          string `json:"memory_id"`
+	ExpectedVersion   int64  `json:"expected_version"`
+	Reason            string `json:"reason,omitempty"`
+	Actor             string `json:"actor,omitempty"`
+	IdempotencyKey    string `json:"idempotency_key,omitempty"`
 }
 
 // WatchListInput is intentionally empty.
@@ -71,8 +72,9 @@ type WatchStopInput struct {
 
 // IngestionStatusInput selects one central ingestion job.
 type IngestionStatusInput struct {
-	Namespace   string `json:"namespace"`
-	IngestionID string `json:"ingestion_id"`
+	Namespace         string `json:"namespace,omitempty"`
+	NamespaceSequence *int64 `json:"namespace_sequence,omitempty"`
+	IngestionID       string `json:"ingestion_id"`
 }
 
 // HealthInput is intentionally empty.
@@ -106,13 +108,12 @@ func New(backend service.Backend, options Options) *mcp.Server {
 	handlers := &Handlers{
 		backend:          backend,
 		ingestionManager: options.IngestionManager,
-		defaultNamespace: strings.ToLower(strings.TrimSpace(options.DefaultNamespace)),
 	}
 
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "memory-recall-coin", Version: options.Version},
 		&mcp.ServerOptions{
-			Instructions: `Primary workflow: memory_put records durable knowledge, memory_search recalls by meaning or text, memory_list browses by filters without a query, and memory_get reads one exact ID or version. Namespaces are slash-separated paths; namespace_match defaults to exact, while subtree explicitly includes descendants. Use namespace_list to discover children. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths.`,
+			Instructions: `Primary workflow: memory_put records durable knowledge, memory_search recalls by meaning or text, memory_list browses by filters without a query, and memory_get reads one exact ID or version. Every memory and source operation requires exactly one namespace selector: the slash-separated namespace path or its stable namespace_sequence. namespace_match defaults to exact, while subtree explicitly includes descendants. Use namespace_list without parent selectors to discover every top-level root, or with exactly one of parent and parent_sequence to browse its descendants. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths.`,
 			Logger:       logger,
 			PageSize:     100,
 		},
@@ -129,7 +130,7 @@ func addTools(server *mcp.Server, handlers *Handlers) {
 	addTypedTool(server, tool("memory_get", "Read a current memory or historical version by ID.", true, true, false), handlers.getMemory)
 	addTypedTool(server, tool("memory_search", "Recall relevant memories and source chunks by exact, substring, lexical, semantic or hybrid retrieval.", true, true, false), handlers.searchMemory)
 	addTypedTool(server, tool("memory_list", "Browse memories by scope, type, tags, metadata, lifecycle and time filters without a query.", true, true, false), handlers.listMemory)
-	addTypedTool(server, tool("namespace_list", "Browse child namespaces and direct versus subtree memory and source counts.", true, true, false), handlers.namespaceList)
+	addTypedTool(server, tool("namespace_list", "List every top-level namespace without a parent selector, or browse descendants below exactly one parent path or parent_sequence.", true, true, false), handlers.namespaceList)
 	addTypedTool(server, tool("namespace_delete", "Preview or delete one namespace; recursive deletion also removes its complete subtree and matching local watches.", false, true, true), handlers.deleteNamespace)
 	addTypedTool(server, tool("memory_delete", "Soft-delete a memory while preserving immutable revision history.", false, true, true), handlers.deleteMemory)
 	addTypedTool(server, tool("memory_history", "List append-only revisions for a memory.", true, true, false), handlers.history)
@@ -173,9 +174,13 @@ func addTypedTool[Input, Output any](
 	repairRawJSONProperties(outputSchema)
 	relaxLocalInputDefaults(inputSchema)
 	if definition.Name == "namespace_delete" {
-		requireInputProperties(inputSchema, "namespace", "reason")
+		requireInputProperties(inputSchema, "reason")
 	}
 	applyInputSchemaConstraints(definition.Name, inputSchema)
+	if definition.Name == "memory_supersede" {
+		removeNestedNamespaceSelectorRequirements(inputSchema.Properties["replacement"])
+	}
+	applyNamespaceSelectorConstraint(definition.Name, inputSchema)
 	definition.InputSchema = inputSchema
 	definition.OutputSchema = &jsonschema.Schema{
 		Type:  "object",
@@ -265,6 +270,57 @@ func relaxLocalInputDefaults(schema *jsonschema.Schema) {
 	}
 }
 
+func removeNestedNamespaceSelectorRequirements(schema *jsonschema.Schema) {
+	if schema == nil {
+		return
+	}
+
+	removeRequiredProperties(schema, "namespace", "namespace_sequence")
+	for _, property := range schema.Properties {
+		removeNestedNamespaceSelectorRequirements(property)
+	}
+	for _, definition := range schema.Defs {
+		removeNestedNamespaceSelectorRequirements(definition)
+	}
+	for _, definition := range schema.Definitions {
+		removeNestedNamespaceSelectorRequirements(definition)
+	}
+	removeNestedNamespaceSelectorRequirements(schema.Items)
+	for _, item := range schema.PrefixItems {
+		removeNestedNamespaceSelectorRequirements(item)
+	}
+	for _, item := range schema.ItemsArray {
+		removeNestedNamespaceSelectorRequirements(item)
+	}
+	for _, item := range schema.AllOf {
+		removeNestedNamespaceSelectorRequirements(item)
+	}
+	for _, item := range schema.AnyOf {
+		removeNestedNamespaceSelectorRequirements(item)
+	}
+}
+
+func removeRequiredProperties(schema *jsonschema.Schema, names ...string) {
+	if schema == nil {
+		return
+	}
+
+	required := schema.Required[:0]
+	for _, requiredName := range schema.Required {
+		remove := false
+		for _, name := range names {
+			if requiredName == name {
+				remove = true
+				break
+			}
+		}
+		if !remove {
+			required = append(required, requiredName)
+		}
+	}
+	schema.Required = required
+}
+
 func requireInputProperties(schema *jsonschema.Schema, names ...string) {
 	if schema == nil {
 		return
@@ -289,7 +345,10 @@ func requireInputProperties(schema *jsonschema.Schema, names ...string) {
 }
 
 func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
-	setNamespacePropertyConstraints(schema, "namespace", "parent", "cursor")
+	setNamespacePropertyConstraints(schema, "namespace")
+	setOptionalNamespacePropertyConstraints(schema, "parent", "cursor")
+	setNumericPropertyMinimum(schema, "namespace_sequence", 0)
+	setNumericPropertyMinimum(schema, "parent_sequence", 0)
 	setPropertyEnum(schema, "scope_type", []string{
 		domain.ScopeInstallation,
 		domain.ScopeDevice,
@@ -368,8 +427,61 @@ func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
 	}
 }
 
+func applyNamespaceSelectorConstraint(toolName string, schema *jsonschema.Schema) {
+	if schema == nil {
+		return
+	}
+
+	if toolName == "namespace_list" {
+		forbidPropertyPair(schema, "parent", "parent_sequence")
+		return
+	}
+	if _, hasNamespace := schema.Properties["namespace"]; !hasNamespace {
+		return
+	}
+	if _, hasSequence := schema.Properties["namespace_sequence"]; !hasSequence {
+		return
+	}
+
+	removeRequiredProperties(schema, "namespace", "namespace_sequence")
+	schema.OneOf = append(schema.OneOf,
+		requireOnlyProperty("namespace", "namespace_sequence"),
+		requireOnlyProperty("namespace_sequence", "namespace"),
+	)
+}
+
+func forbidPropertyPair(schema *jsonschema.Schema, first, second string) {
+	schema.Not = &jsonschema.Schema{
+		Required: []string{first, second},
+	}
+}
+
+func requireOnlyProperty(required, forbidden string) *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Required: []string{required},
+		Not: &jsonschema.Schema{
+			Required: []string{forbidden},
+		},
+	}
+}
+
 func setNamespacePropertyConstraints(schema *jsonschema.Schema, propertyNames ...string) {
 	const pattern = `^[a-z0-9]([a-z0-9._-]*[a-z0-9])?(/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)*$`
+	maxLength := 128
+	walkSchema(schema, func(current *jsonschema.Schema) {
+		for _, propertyName := range propertyNames {
+			property, exists := current.Properties[propertyName]
+			if !exists {
+				continue
+			}
+			property.Pattern = pattern
+			property.MaxLength = &maxLength
+		}
+	})
+}
+
+func setOptionalNamespacePropertyConstraints(schema *jsonschema.Schema, propertyNames ...string) {
+	const pattern = `^$|^[a-z0-9]([a-z0-9._-]*[a-z0-9])?(/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)*$`
 	maxLength := 128
 	walkSchema(schema, func(current *jsonschema.Schema) {
 		for _, propertyName := range propertyNames {
@@ -433,6 +545,15 @@ func setNumericPropertyRange(schema *jsonschema.Schema, propertyName string, min
 		}
 		property.Minimum = &minimum
 		property.Maximum = &maximum
+	})
+}
+
+func setNumericPropertyMinimum(schema *jsonschema.Schema, propertyName string, minimum float64) {
+	walkSchema(schema, func(current *jsonschema.Schema) {
+		property, exists := current.Properties[propertyName]
+		if exists {
+			property.Minimum = &minimum
+		}
 	})
 }
 
@@ -742,13 +863,14 @@ func (h *Handlers) touchMemory(ctx context.Context, _ *mcp.CallToolRequest, inpu
 
 func (h *Handlers) pinMemory(ctx context.Context, _ *mcp.CallToolRequest, input PinMemoryInput) (*mcp.CallToolResult, domain.Memory, error) {
 	result, err := h.backend.TouchMemory(ctx, service.TouchMemoryInput{
-		Namespace:       input.Namespace,
-		ID:              input.MemoryID,
-		ExpectedVersion: input.ExpectedVersion,
-		Pin:             true,
-		Reason:          input.Reason,
-		Actor:           input.Actor,
-		IdempotencyKey:  input.IdempotencyKey,
+		Namespace:         input.Namespace,
+		NamespaceSequence: input.NamespaceSequence,
+		ID:                input.MemoryID,
+		ExpectedVersion:   input.ExpectedVersion,
+		Pin:               true,
+		Reason:            input.Reason,
+		Actor:             input.Actor,
+		IdempotencyKey:    input.IdempotencyKey,
 	})
 	return nil, result, err
 }
@@ -772,9 +894,9 @@ func (h *Handlers) ingestPath(ctx context.Context, _ *mcp.CallToolRequest, input
 	if input.Recursive != nil {
 		recursive = *input.Recursive
 	}
-	namespace := strings.ToLower(strings.TrimSpace(input.Namespace))
-	if namespace == "" {
-		namespace = h.defaultNamespace
+	namespace, err := h.resolveLocalNamespace(ctx, input.Namespace, input.NamespaceSequence)
+	if err != nil {
+		return nil, domain.IngestionSummary{}, err
 	}
 	syncInput := service.SyncSourcesInput{
 		Namespace:    namespace,
@@ -802,10 +924,32 @@ func (h *Handlers) ingestPath(ctx context.Context, _ *mcp.CallToolRequest, input
 	return nil, result, err
 }
 
+func (h *Handlers) resolveLocalNamespace(ctx context.Context, namespace string, sequence *int64) (string, error) {
+	namespace = strings.ToLower(strings.TrimSpace(namespace))
+	if sequence == nil {
+		return namespace, nil
+	}
+
+	result, err := h.backend.ListNamespaces(ctx, service.NamespaceListInput{
+		ParentSequence: sequence,
+		Depth:          1,
+		Limit:          1,
+	})
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(result.Parent) == "" {
+		return "", service.NewError(service.CodeInternal, "namespace sequence resolved to an empty path")
+	}
+
+	return strings.ToLower(strings.TrimSpace(result.Parent)), nil
+}
+
 func (h *Handlers) ingestionStatus(ctx context.Context, _ *mcp.CallToolRequest, input IngestionStatusInput) (*mcp.CallToolResult, domain.SourceStatus, error) {
 	result, err := h.backend.SourceStatus(ctx, service.SourceStatusInput{
-		Namespace:   input.Namespace,
-		IngestionID: input.IngestionID,
+		Namespace:         input.Namespace,
+		NamespaceSequence: input.NamespaceSequence,
+		IngestionID:       input.IngestionID,
 	})
 	return nil, result, err
 }

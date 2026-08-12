@@ -14,11 +14,12 @@ import (
  * @return namespace summaries ordered by their canonical path
  */
 func (s *Store) ListNamespaces(ctx context.Context, input NamespaceListInput) (domain.NamespaceListResponse, error) {
-	parent, err := normalizeNamespace(input.Parent)
+	parent, err := s.resolveOptionalNamespaceSelector(ctx, input.Parent, input.ParentSequence)
 	if err != nil {
 		return domain.NamespaceListResponse{}, err
 	}
 	input.Parent = parent
+	input.ParentSequence = nil
 	if input.Depth <= 0 {
 		input.Depth = 1
 	}
@@ -38,31 +39,38 @@ func (s *Store) ListNamespaces(ctx context.Context, input NamespaceListInput) (d
 			return domain.NamespaceListResponse{}, NewError(CodeInvalidArgument, "cursor must be a namespace returned by namespace_list")
 		}
 		input.Cursor = cursor
-		if !namespaceContains(input.Parent, input.Cursor, true) {
+		if input.Parent != "" && !namespaceContains(input.Parent, input.Cursor, true) {
 			return domain.NamespaceListResponse{}, NewError(CodeInvalidArgument, "cursor must be inside the requested namespace tree")
 		}
 	}
 
-	var parentStatus string
-	err = s.pool.QueryRow(ctx, "SELECT lifecycle_status FROM namespaces WHERE code = $1", input.Parent).Scan(&parentStatus)
-	if errorsIsNoRows(err) {
-		return domain.NamespaceListResponse{}, NewError(CodeNotFound, "parent namespace not found")
-	}
-	if err != nil {
-		return domain.NamespaceListResponse{}, WrapError(CodeInternal, "read parent namespace", err)
-	}
-	if parentStatus == "deleted" && !input.IncludeDeleted {
-		return domain.NamespaceListResponse{}, NewError(CodeNotFound, "parent namespace is deleted")
+	if input.Parent != "" {
+		var parentStatus string
+		err := s.pool.QueryRow(ctx, "SELECT lifecycle_status FROM namespaces WHERE code = $1", input.Parent).Scan(&parentStatus)
+		if errorsIsNoRows(err) {
+			return domain.NamespaceListResponse{}, NewError(CodeNotFound, "parent namespace not found")
+		}
+		if err != nil {
+			return domain.NamespaceListResponse{}, WrapError(CodeInternal, "read parent namespace", err)
+		}
+		if parentStatus == "deleted" && !input.IncludeDeleted {
+			return domain.NamespaceListResponse{}, NewError(CodeNotFound, "parent namespace is deleted")
+		}
 	}
 
 	parentDepth := strings.Count(input.Parent, "/")
+	pattern := escapeLikePattern(input.Parent) + "/%"
+	if input.Parent == "" {
+		parentDepth = -1
+		pattern = "%"
+	}
 	rows, err := s.pool.Query(ctx, `
 		WITH visible_namespaces AS (
-			SELECT code, lifecycle_status, deleted_at
+			SELECT code, sequence_number, lifecycle_status, deleted_at
 			FROM namespaces
 			WHERE $4 OR lifecycle_status = 'active'
 		), candidates AS (
-			SELECT n.code, n.lifecycle_status, n.deleted_at
+			SELECT n.code, n.sequence_number, n.lifecycle_status, n.deleted_at
 			FROM visible_namespaces n
 			WHERE n.code LIKE $1 ESCAPE E'\\'
 			  AND length(n.code) - length(replace(n.code, '/', '')) - $2 BETWEEN 1 AND $3
@@ -73,6 +81,7 @@ func (s *Store) ListNamespaces(ctx context.Context, input NamespaceListInput) (d
 			SELECT regexp_replace(code, '/[^/]+$', '') AS namespace, count(*) AS count
 			FROM visible_namespaces
 			WHERE code LIKE $1 ESCAPE E'\\'
+			  AND strpos(code, '/') > 0
 			GROUP BY regexp_replace(code, '/[^/]+$', '')
 		), direct_memory_counts AS (
 			SELECT namespace, count(*) AS count
@@ -105,6 +114,7 @@ func (s *Store) ListNamespaces(ctx context.Context, input NamespaceListInput) (d
 		)
 		SELECT
 			c.code,
+			c.sequence_number,
 			coalesce(nullif(regexp_replace(c.code, '/[^/]+$', ''), c.code), ''),
 			regexp_replace(c.code, '^.*/', ''),
 			c.lifecycle_status,
@@ -122,7 +132,7 @@ func (s *Store) ListNamespaces(ctx context.Context, input NamespaceListInput) (d
 		LEFT JOIN subtree_source_counts subtree_sources ON subtree_sources.namespace = c.code
 		ORDER BY c.code
 	`,
-		escapeLikePattern(input.Parent)+"/%",
+		pattern,
 		parentDepth,
 		input.Depth,
 		input.IncludeDeleted,
@@ -139,6 +149,7 @@ func (s *Store) ListNamespaces(ctx context.Context, input NamespaceListInput) (d
 		var summary domain.NamespaceSummary
 		if err := rows.Scan(
 			&summary.Namespace,
+			&summary.Sequence,
 			&summary.Parent,
 			&summary.Segment,
 			&summary.Status,
@@ -177,11 +188,12 @@ func (s *Store) ListNamespaces(ctx context.Context, input NamespaceListInput) (d
  * @return deterministic affected-row counts and deletion state
  */
 func (s *Store) DeleteNamespace(ctx context.Context, input NamespaceDeleteInput) (domain.NamespaceDeleteResult, error) {
-	namespace, err := normalizeNamespace(input.Namespace)
+	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
 	if err != nil {
 		return domain.NamespaceDeleteResult{}, err
 	}
 	input.Namespace = namespace
+	input.NamespaceSequence = nil
 	if err := requireNonEmpty("reason", input.Reason); err != nil {
 		return domain.NamespaceDeleteResult{}, err
 	}

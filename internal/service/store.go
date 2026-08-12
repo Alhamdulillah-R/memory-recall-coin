@@ -73,6 +73,66 @@ func rollback(tx pgx.Tx) {
 	_ = tx.Rollback(context.Background())
 }
 
+/**
+ * resolveNamespaceSelector resolves exactly one namespace path or persistent sequence.
+ * @param ctx request context
+ * @param namespace canonical path selector; a new path is allowed for write operations
+ * @param sequence persistent namespace sequence; it must already exist
+ * @return canonical namespace path
+ */
+func (s *Store) resolveNamespaceSelector(
+	ctx context.Context,
+	namespace string,
+	sequence *int64,
+) (string, error) {
+	namespace = strings.TrimSpace(namespace)
+	if namespace != "" && sequence != nil {
+		return "", NewError(CodeInvalidArgument, "namespace and namespace_sequence are mutually exclusive")
+	}
+	if namespace == "" && sequence == nil {
+		return "", NewError(CodeInvalidArgument, "namespace or namespace_sequence is required")
+	}
+	if namespace != "" {
+		return normalizeNamespace(namespace)
+	}
+	if *sequence < 0 {
+		return "", NewError(CodeInvalidArgument, "namespace_sequence must be non-negative")
+	}
+
+	err := s.pool.QueryRow(ctx, `
+		SELECT code
+		FROM namespaces
+		WHERE sequence_number = $1
+	`, *sequence).Scan(&namespace)
+	if errorsIsNoRows(err) {
+		serviceErr := NewError(CodeNotFound, "namespace sequence not found")
+		serviceErr.Details = map[string]any{"namespace_sequence": *sequence}
+
+		return "", serviceErr
+	}
+	if err != nil {
+		return "", WrapError(CodeInternal, "resolve namespace sequence", err)
+	}
+
+	return namespace, nil
+}
+
+/**
+ * resolveOptionalNamespaceSelector resolves a namespace selector while allowing neither for root discovery.
+ * @return canonical namespace path, or an empty path when neither selector is supplied
+ */
+func (s *Store) resolveOptionalNamespaceSelector(
+	ctx context.Context,
+	namespace string,
+	sequence *int64,
+) (string, error) {
+	if strings.TrimSpace(namespace) == "" && sequence == nil {
+		return "", nil
+	}
+
+	return s.resolveNamespaceSelector(ctx, namespace, sequence)
+}
+
 func ensureNamespace(ctx context.Context, tx pgx.Tx, namespace string) error {
 	if err := lockNamespaceCatalog(ctx, tx, false); err != nil {
 		return err
@@ -82,7 +142,12 @@ func ensureNamespace(ctx context.Context, tx pgx.Tx, namespace string) error {
 		return err
 	}
 	for _, ancestor := range ancestors {
-		if _, err := tx.Exec(ctx, "INSERT INTO namespaces(code) VALUES ($1) ON CONFLICT DO NOTHING", ancestor); err != nil {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO namespaces(code)
+			SELECT $1
+			WHERE NOT EXISTS (SELECT 1 FROM namespaces WHERE code = $1)
+			ON CONFLICT DO NOTHING
+		`, ancestor); err != nil {
 			return WrapError(CodeInternal, "ensure namespace hierarchy", err)
 		}
 	}

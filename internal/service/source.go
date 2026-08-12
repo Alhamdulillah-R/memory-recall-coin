@@ -39,6 +39,13 @@ type textChunk struct {
  * @return ingestion summary with deterministic counters
  */
 func (s *Store) SyncSources(ctx context.Context, input SyncSourcesInput) (domain.IngestionSummary, error) {
+	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
+	if err != nil {
+		return domain.IngestionSummary{}, err
+	}
+	input.Namespace = namespace
+	input.NamespaceSequence = nil
+
 	normalized, err := normalizeSyncInput(input)
 	if err != nil {
 		return domain.IngestionSummary{}, err
@@ -153,11 +160,12 @@ func (s *Store) SyncSources(ctx context.Context, input SyncSourcesInput) (domain
  * @return source records and embedding queue counters
  */
 func (s *Store) SourceStatus(ctx context.Context, input SourceStatusInput) (domain.SourceStatus, error) {
-	namespace, err := normalizeNamespace(input.Namespace)
+	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
 	if err != nil {
 		return domain.SourceStatus{}, err
 	}
 	input.Namespace = namespace
+	input.NamespaceSequence = nil
 	if input.NamespaceMatch == "" {
 		input.NamespaceMatch = domain.NamespaceMatchExact
 	}
@@ -244,11 +252,12 @@ func (s *Store) SourceStatus(ctx context.Context, input SourceStatusInput) (doma
  * @return deleted source state
  */
 func (s *Store) DeleteSource(ctx context.Context, input DeleteSourceInput) (domain.Source, error) {
-	namespace, err := normalizeNamespace(input.Namespace)
+	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
 	if err != nil {
 		return domain.Source{}, err
 	}
 	input.Namespace = namespace
+	input.NamespaceSequence = nil
 	actor := normalizeActor("", input.Caller)
 	tx, err := s.beginMutation(ctx, actor, input.Reason)
 	if err != nil {

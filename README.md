@@ -86,7 +86,7 @@ task --taskfile .\Task.yml build VERSION=v0.1.0 REVISION=0123456789abcdef BUILD_
 | `MEMORY_API_TOKEN_FILE` | 无 | token 文件；`MEMORY_API_TOKEN` 为空时读取，适合 MCP controller 避免把 secret 写进 plugin registry |
 | `MEMORY_API_URL` | 无 | 本地 stdio bridge 使用的中央 base URL；`mcp` 必填 |
 | `MEMORY_SIGNAL_HMAC_SECRET` | 无 | hardware signal HMAC secret；`serve` 必填 |
-| `MEMORY_DEFAULT_NAMESPACE` | workspace config | 本机默认 namespace path，也是 `namespace_list.parent` 的默认值 |
+| `MEMORY_DEFAULT_NAMESPACE` | workspace config | legacy workspace metadata；memory/source tools 不会自动使用，调用时必须显式传 namespace selector |
 | `MEMORY_WORKSPACE_CODE` | workspace config | 本机 workspace identity |
 | `MEMORY_DEFAULT_SCOPE` | `workspace` | 默认 scope |
 | `MEMORY_IDENTITY_FILE` | OS user config directory | installation identity 文件 |
@@ -107,6 +107,8 @@ task --taskfile .\Task.yml build VERSION=v0.1.0 REVISION=0123456789abcdef BUILD_
 | `MEMORY_WATCH_DEBOUNCE` | `750ms` | filesystem watch debounce |
 | `MEMORY_REQUEST_TIMEOUT` | `30s` | 本地 HTTP 与 embedding request timeout |
 | `MEMORY_SHUTDOWN_TIMEOUT` | `15s` | 中央 graceful shutdown timeout |
+
+`MEMORY_DEFAULT_NAMESPACE` 仅保留为 workspace metadata/兼容配置，不参与 MCP 或 RPC request 补值。
 
 `MEMORY_EMBEDDING_PROVIDER=none` 时 exact、substring、lexical、metadata 和 temporal channel 仍可用，只有 semantic channel 被关闭。
 
@@ -185,7 +187,7 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_search` 
 | `memory_get` | 按 ID 读取当前 memory 或指定历史 version |
 | `memory_search` | 执行 exact、substring、lexical、semantic、temporal、metadata 和 hybrid retrieval |
 | `memory_list` | 无需 query，按 scope、type、tag、metadata、lifecycle 和时间过滤浏览 memory |
-| `namespace_list` | 从指定 parent 浏览 namespace tree，并返回 direct/subtree memory 与 source counts |
+| `namespace_list` | 不传 parent selector 时列出所有顶级 roots；指定 `parent` 或 `parent_sequence` 时浏览其 namespace tree，并返回 direct/subtree memory 与 source counts |
 | `namespace_delete` | 默认 dry-run 预览 namespace 清理数量；确认后可删除目标或完整 subtree，并停止匹配的本机 watches |
 | `memory_delete` | soft delete memory，保留 revision history |
 | `memory_history` | 分页读取 append-only revisions |
@@ -206,19 +208,31 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_search` 
 | `device_whoami` | 查询当前 installation、device、workspace 与 verified caller identity |
 | `memory_health` | 查询 PostgreSQL 与 embedding provider 状态及 server version |
 
-namespace 是小写 slash-separated path，例如 `memory-recall-coin/android/anti-bot`。`memory_search`、`memory_list` 和 `memory_source_status` 的 `namespace_match` 默认为 `exact`；只有显式传 `subtree` 才包含当前 namespace 的全部 descendants。省略 namespace 或 `namespace_list.parent` 时使用本机 `MEMORY_DEFAULT_NAMESPACE`。scope 仍负责 visibility，namespace hierarchy 不授予或扩展权限。
+namespace 是小写 slash-separated path，例如 `memory-recall-coin/android/anti-bot`。每个 memory/source request 必须且只能使用一个 selector：`namespace` path，或 `namespace_sequence`。sequence 是数据库分配的持久非负整数，rename 后仍可稳定引用；`0` 是合法值，不能按 false/empty 处理。服务不再从 workspace 或 `MEMORY_DEFAULT_NAMESPACE` 自动补齐。`memory_search`、`memory_list` 和 `memory_source_status` 的 `namespace_match` 默认为 `exact`；只有显式传 `subtree` 才包含已解析 namespace 的全部 descendants。scope 仍负责 visibility，namespace hierarchy 不授予或扩展权限。
 
 ```json
 {"query":"Frida detection","namespace":"memory-recall-coin/android","namespace_match":"subtree"}
 ```
 
-`namespace_list` 是唯一的 namespace discovery tool；namespace 随写入隐式建立，不提供 create/rename tool。默认 `depth=1`、`limit=100`，返回 virtual parent、child count 以及 direct/subtree counts。
+```json
+{"query":"Frida detection","namespace_sequence":42,"namespace_match":"subtree"}
+```
+
+`namespace_list` 是唯一的 namespace discovery tool；namespace 随写入隐式建立，不提供 create/rename tool。不传 `parent`/`parent_sequence`（或传 `parent=""`）时从全库顶层开始，返回所有 top-level roots；否则必须且只能传一个非空 `parent` path 或 `parent_sequence`。默认 `depth=1`、`limit=100`，response 的 `parent` 始终是解析后的 canonical path，每项返回持久 `sequence`、parent、child count、direct/subtree counts 和 status。全库遍历按返回的 `next_cursor` 继续分页，不依赖 workspace default 或内容推断。
+
+```json
+{"parent":"","depth":16,"limit":200}
+```
 
 ```json
 {"parent":"memory-recall-coin/android","depth":2,"limit":100}
 ```
 
-`namespace_delete` 的 `namespace` 和 `reason` 必填，且不会为 namespace 套用本机默认值。`dry_run` 默认为 `true`。确认 counts 后必须显式传 `dry_run=false`；`recursive=false` 只处理目标 namespace，存在 active descendants 时返回 `FAILED_PRECONDITION`。`recursive=true` 同时清理 subtree 的 memories/revisions/relations、sources/chunks/content、embeddings/jobs、ingestion roots/jobs、idempotency records 和持久化 watch registrations。通过 stdio MCP 调用时还会预览或停止匹配 namespace 的本机 watches，并单独返回 `affected_watch_ids`。
+```json
+{"parent_sequence":42,"depth":2,"limit":100}
+```
+
+`namespace_delete` 必须且只能传 `namespace` 或 `namespace_sequence` 之一，`reason` 必填，且不会套用本机默认值。`dry_run` 默认为 `true`。确认 counts 后必须显式传 `dry_run=false`；`recursive=false` 只处理解析后的目标 namespace，存在 active descendants 时返回 `FAILED_PRECONDITION`。`recursive=true` 同时清理 subtree 的 memories/revisions/relations、sources/chunks/content、embeddings/jobs、ingestion roots/jobs、idempotency records 和持久化 watch registrations。通过 stdio MCP 调用时还会预览或停止匹配 namespace 的本机 watches，并单独返回 `affected_watch_ids`。
 
 实际删除是不可逆 hard purge，并保留 namespace tombstone；被删除的 path 及其 descendants 不能被重新创建。其他 stdio 进程中的 watch 在下一次 sync 收到 `FAILED_PRECONDITION` 后自行停止，tombstone 会阻止它们在此之前重新写回数据。
 

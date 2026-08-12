@@ -34,9 +34,9 @@ memory-recall-coin/android/anti-bot
 personal-global
 ```
 
-所有 memory、source、revision 和 chunk 必须属于一个 exact namespace。写入 leaf 时自动建立缺失的 ancestors。调用方必须显式传入 namespace，或者由 workspace 配置自动解析，服务端不能根据当前目录随意猜测。
+所有 memory、source、revision 和 chunk 必须属于一个 exact namespace。写入 leaf 时自动建立缺失的 ancestors。所有 memory/source 操作都必须显式传且只能传一个 selector：`namespace` path 或持久 `namespace_sequence`。sequence 是非负整数，`0` 合法；workspace config 与服务端均不得自动补齐或根据当前目录猜测。
 
-读取默认使用 `namespace_match=exact`；只有显式传 `subtree` 才包含 descendants。`namespace_list` 负责浏览 child paths 和 direct/subtree counts。`namespace_delete` 必须显式传 namespace 与 reason，默认 `dry_run=true`；非递归删除遇到 active child 时拒绝执行，递归删除会 hard purge 整棵 subtree 的 memory、source、embedding、ingestion 与 watch registration，并保留不可复用的 tombstone。
+读取默认使用 `namespace_match=exact`；只有显式传 `subtree` 才包含 descendants。`namespace_list` 不传 parent selector 时从全库顶层返回所有 roots；否则只能传 `parent` path 或 `parent_sequence` 之一。response 的 `parent` 始终是解析后的 canonical path，nodes 包含持久 `sequence`、parent、child paths、direct/subtree counts 与 status，可用 `next_cursor` 完整分页，不依赖 workspace default 或语义推断。`namespace_delete` 必须传 `namespace`/`namespace_sequence` 之一及 reason，默认 `dry_run=true`；非递归删除遇到 active child 时拒绝执行，递归删除会 hard purge 整棵 subtree 的 memory、source、embedding、ingestion 与 watch registration，并保留不可复用的 tombstone。
 
 ### 2.2 device_code
 
@@ -367,10 +367,12 @@ device_migrate
 device_whoami
 ```
 
-所有 memory 请求至少携带：
+`namespace_list` 是唯一允许省略 namespace selector 的 namespace-scoped tool：省略 `parent` 和 `parent_sequence`（或显式 `parent=""`）返回所有顶级 roots；指定树时必须且只能传非空 `parent` path 或 `parent_sequence` 之一。每项返回 canonical namespace、持久 sequence、parent、child count、direct/subtree memory/source counts 和 lifecycle status。其他 memory/source tools 必须且只能传 `namespace` 或 `namespace_sequence` 之一；sequence minimum 为 `0`。
+
+所有 memory 请求至少携带一个 namespace selector：
 
 ```text
-namespace
+namespace 或 namespace_sequence（二选一）
 device_code（通常由当前连接自动补充）
 scope_type
 ```

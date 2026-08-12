@@ -43,6 +43,13 @@ type channelResult struct {
  */
 func (s *Store) SearchMemory(ctx context.Context, input SearchMemoryInput) (domain.SearchResponse, error) {
 	startedAt := time.Now()
+	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
+	if err != nil {
+		return domain.SearchResponse{}, err
+	}
+	input.Namespace = namespace
+	input.NamespaceSequence = nil
+
 	normalized, err := normalizeSearchInput(input)
 	if err != nil {
 		return domain.SearchResponse{}, err

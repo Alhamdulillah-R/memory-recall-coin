@@ -10,7 +10,8 @@ import (
 
 // PutMemoryInput creates one versioned memory.
 type PutMemoryInput struct {
-	Namespace         string                `json:"namespace" jsonschema:"slash-separated namespace path; may use configured workspace default when omitted"`
+	Namespace         string                `json:"namespace,omitempty" jsonschema:"slash-separated namespace path; mutually exclusive with namespace_sequence"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty" jsonschema:"stable namespace sequence; mutually exclusive with namespace"`
 	ID                string                `json:"id,omitempty" jsonschema:"optional stable memory ID; generated when omitted"`
 	ScopeType         string                `json:"scope_type" jsonschema:"installation, device, workspace, project, or global"`
 	ScopeID           string                `json:"scope_id,omitempty" jsonschema:"scope identifier; inferred from caller identity when omitted"`
@@ -37,7 +38,8 @@ type PutMemoryInput struct {
 
 // PatchMemoryInput updates mutable fields with optimistic concurrency.
 type PatchMemoryInput struct {
-	Namespace         string                `json:"namespace"`
+	Namespace         string                `json:"namespace,omitempty"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
 	ID                string                `json:"memory_id"`
 	ExpectedVersion   int64                 `json:"expected_version"`
 	Title             *string               `json:"title,omitempty"`
@@ -64,7 +66,8 @@ type PatchMemoryInput struct {
 
 // GetMemoryInput reads the current memory or a historical version.
 type GetMemoryInput struct {
-	Namespace         string                `json:"namespace"`
+	Namespace         string                `json:"namespace,omitempty"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
 	ID                string                `json:"memory_id"`
 	Version           *int64                `json:"version,omitempty"`
 	IncludeExpired    bool                  `json:"include_expired,omitempty"`
@@ -76,7 +79,8 @@ type GetMemoryInput struct {
 
 // SearchMemoryInput selects retrieval channels and filters.
 type SearchMemoryInput struct {
-	Namespace         string                `json:"namespace"`
+	Namespace         string                `json:"namespace,omitempty"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
 	NamespaceMatch    string                `json:"namespace_match,omitempty" jsonschema:"exact or subtree; default exact"`
 	Query             string                `json:"query"`
 	RetrievalMode     string                `json:"retrieval_mode,omitempty" jsonschema:"hybrid, exact, substring, lexical, or semantic; default hybrid"`
@@ -106,7 +110,8 @@ type SearchMemoryInput struct {
 
 // ListMemoryInput browses memories using filters without requiring a search query.
 type ListMemoryInput struct {
-	Namespace         string                `json:"namespace"`
+	Namespace         string                `json:"namespace,omitempty"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
 	NamespaceMatch    string                `json:"namespace_match,omitempty" jsonschema:"exact or subtree; default exact"`
 	ScopeMode         string                `json:"scope_mode,omitempty" jsonschema:"prefer_local, local_only, project_only, or all_devices"`
 	DetailLevel       string                `json:"detail_level,omitempty" jsonschema:"compact or full; default compact"`
@@ -133,6 +138,7 @@ type ListMemoryInput struct {
 func (input ListMemoryInput) SearchInput() SearchMemoryInput {
 	return SearchMemoryInput{
 		Namespace:         input.Namespace,
+		NamespaceSequence: input.NamespaceSequence,
 		NamespaceMatch:    input.NamespaceMatch,
 		RetrievalMode:     "list",
 		ScopeMode:         input.ScopeMode,
@@ -159,9 +165,10 @@ func (input ListMemoryInput) SearchInput() SearchMemoryInput {
 	}
 }
 
-// NamespaceListInput browses the namespace tree below one parent path.
+// NamespaceListInput browses the namespace tree below one parent path or lists every root.
 type NamespaceListInput struct {
-	Parent         string                `json:"parent,omitempty" jsonschema:"parent namespace; configured caller namespace when omitted"`
+	Parent         string                `json:"parent,omitempty" jsonschema:"parent namespace path; empty lists every top-level namespace"`
+	ParentSequence *int64                `json:"parent_sequence,omitempty" jsonschema:"stable parent namespace sequence; mutually exclusive with parent"`
 	Depth          int                   `json:"depth,omitempty" jsonschema:"maximum descendant depth from 1 to 16; default 1"`
 	IncludeDeleted bool                  `json:"include_deleted,omitempty"`
 	Limit          int                   `json:"limit,omitempty" jsonschema:"maximum namespaces from 1 to 200; default 100"`
@@ -171,11 +178,12 @@ type NamespaceListInput struct {
 
 // NamespaceDeleteInput previews or deletes one namespace and optionally its subtree.
 type NamespaceDeleteInput struct {
-	Namespace string                `json:"namespace" jsonschema:"required target namespace path; no configured default is applied"`
-	Recursive bool                  `json:"recursive,omitempty" jsonschema:"include every descendant namespace; default false"`
-	DryRun    *bool                 `json:"dry_run,omitempty" jsonschema:"preview affected records without deleting; default true"`
-	Reason    string                `json:"reason" jsonschema:"required audit reason"`
-	Caller    domain.CallerIdentity `json:"-"`
+	Namespace         string                `json:"namespace,omitempty" jsonschema:"target namespace path; mutually exclusive with namespace_sequence"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty" jsonschema:"stable target namespace sequence; mutually exclusive with namespace"`
+	Recursive         bool                  `json:"recursive,omitempty" jsonschema:"include every descendant namespace; default false"`
+	DryRun            *bool                 `json:"dry_run,omitempty" jsonschema:"preview affected records without deleting; default true"`
+	Reason            string                `json:"reason" jsonschema:"required audit reason"`
+	Caller            domain.CallerIdentity `json:"-"`
 }
 
 // ShouldDryRun resolves the safe default for namespace deletion.
@@ -185,73 +193,79 @@ func (input NamespaceDeleteInput) ShouldDryRun() bool {
 
 // DeleteMemoryInput soft-deletes a memory using optimistic concurrency.
 type DeleteMemoryInput struct {
-	Namespace       string                `json:"namespace"`
-	ID              string                `json:"memory_id"`
-	ExpectedVersion int64                 `json:"expected_version"`
-	Reason          string                `json:"reason"`
-	Actor           string                `json:"actor,omitempty"`
-	IdempotencyKey  string                `json:"idempotency_key,omitempty"`
-	Caller          domain.CallerIdentity `json:"-"`
+	Namespace         string                `json:"namespace,omitempty"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
+	ID                string                `json:"memory_id"`
+	ExpectedVersion   int64                 `json:"expected_version"`
+	Reason            string                `json:"reason"`
+	Actor             string                `json:"actor,omitempty"`
+	IdempotencyKey    string                `json:"idempotency_key,omitempty"`
+	Caller            domain.CallerIdentity `json:"-"`
 }
 
 // HistoryInput lists immutable revisions for one memory.
 type HistoryInput struct {
-	Namespace string                `json:"namespace"`
-	ID        string                `json:"memory_id"`
-	Limit     int                   `json:"limit,omitempty"`
-	BeforeID  int64                 `json:"before_revision_id,omitempty"`
-	Caller    domain.CallerIdentity `json:"-"`
+	Namespace         string                `json:"namespace,omitempty"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
+	ID                string                `json:"memory_id"`
+	Limit             int                   `json:"limit,omitempty"`
+	BeforeID          int64                 `json:"before_revision_id,omitempty"`
+	Caller            domain.CallerIdentity `json:"-"`
 }
 
 // RestoreMemoryInput restores a snapshot as a new current version.
 type RestoreMemoryInput struct {
-	Namespace       string                `json:"namespace"`
-	ID              string                `json:"memory_id"`
-	RevisionVersion int64                 `json:"revision_version"`
-	ExpectedVersion int64                 `json:"expected_version"`
-	Reason          string                `json:"reason"`
-	Actor           string                `json:"actor,omitempty"`
-	IdempotencyKey  string                `json:"idempotency_key,omitempty"`
-	Caller          domain.CallerIdentity `json:"-"`
+	Namespace         string                `json:"namespace,omitempty"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
+	ID                string                `json:"memory_id"`
+	RevisionVersion   int64                 `json:"revision_version"`
+	ExpectedVersion   int64                 `json:"expected_version"`
+	Reason            string                `json:"reason"`
+	Actor             string                `json:"actor,omitempty"`
+	IdempotencyKey    string                `json:"idempotency_key,omitempty"`
+	Caller            domain.CallerIdentity `json:"-"`
 }
 
 // SupersedeMemoryInput atomically creates a replacement and supersedes the target.
 type SupersedeMemoryInput struct {
-	Namespace       string                `json:"namespace"`
-	TargetID        string                `json:"target_memory_id"`
-	ExpectedVersion int64                 `json:"expected_version"`
-	Replacement     PutMemoryInput        `json:"replacement"`
-	Reason          string                `json:"reason"`
-	Actor           string                `json:"actor,omitempty"`
-	IdempotencyKey  string                `json:"idempotency_key,omitempty"`
-	Caller          domain.CallerIdentity `json:"-"`
+	Namespace         string                `json:"namespace,omitempty"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
+	TargetID          string                `json:"target_memory_id"`
+	ExpectedVersion   int64                 `json:"expected_version"`
+	Replacement       PutMemoryInput        `json:"replacement"`
+	Reason            string                `json:"reason"`
+	Actor             string                `json:"actor,omitempty"`
+	IdempotencyKey    string                `json:"idempotency_key,omitempty"`
+	Caller            domain.CallerIdentity `json:"-"`
 }
 
 // RefuteMemoryInput marks one memory refuted and links a refuting memory when supplied.
 type RefuteMemoryInput struct {
-	Namespace        string                `json:"namespace"`
-	TargetID         string                `json:"target_memory_id"`
-	ExpectedVersion  int64                 `json:"expected_version"`
-	RefutingMemoryID string                `json:"refuting_memory_id,omitempty"`
-	Reason           string                `json:"reason"`
-	Evidence         json.RawMessage       `json:"evidence,omitempty"`
-	Actor            string                `json:"actor,omitempty"`
-	IdempotencyKey   string                `json:"idempotency_key,omitempty"`
-	Caller           domain.CallerIdentity `json:"-"`
+	Namespace         string                `json:"namespace,omitempty"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
+	TargetID          string                `json:"target_memory_id"`
+	ExpectedVersion   int64                 `json:"expected_version"`
+	RefutingMemoryID  string                `json:"refuting_memory_id,omitempty"`
+	Reason            string                `json:"reason"`
+	Evidence          json.RawMessage       `json:"evidence,omitempty"`
+	Actor             string                `json:"actor,omitempty"`
+	IdempotencyKey    string                `json:"idempotency_key,omitempty"`
+	Caller            domain.CallerIdentity `json:"-"`
 }
 
 // TouchMemoryInput extends, replaces or clears expiration with optimistic concurrency.
 type TouchMemoryInput struct {
-	Namespace       string                `json:"namespace"`
-	ID              string                `json:"memory_id"`
-	ExpectedVersion int64                 `json:"expected_version"`
-	ExtendBySeconds *int64                `json:"extend_by_seconds,omitempty"`
-	ExpiresAt       *time.Time            `json:"expires_at,omitempty"`
-	Pin             bool                  `json:"pin,omitempty" jsonschema:"clear expiration when true"`
-	Reason          string                `json:"reason,omitempty"`
-	Actor           string                `json:"actor,omitempty"`
-	IdempotencyKey  string                `json:"idempotency_key,omitempty"`
-	Caller          domain.CallerIdentity `json:"-"`
+	Namespace         string                `json:"namespace,omitempty"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
+	ID                string                `json:"memory_id"`
+	ExpectedVersion   int64                 `json:"expected_version"`
+	ExtendBySeconds   *int64                `json:"extend_by_seconds,omitempty"`
+	ExpiresAt         *time.Time            `json:"expires_at,omitempty"`
+	Pin               bool                  `json:"pin,omitempty" jsonschema:"clear expiration when true"`
+	Reason            string                `json:"reason,omitempty"`
+	Actor             string                `json:"actor,omitempty"`
+	IdempotencyKey    string                `json:"idempotency_key,omitempty"`
+	Caller            domain.CallerIdentity `json:"-"`
 }
 
 // RegisterDeviceInput creates an installation and resolves its logical device.
@@ -302,39 +316,42 @@ type WhoAmIResult struct {
 
 // SyncSourcesInput uploads a complete local path manifest to the central index.
 type SyncSourcesInput struct {
-	Namespace    string                `json:"namespace"`
-	ScopeType    string                `json:"scope_type"`
-	ScopeID      string                `json:"scope_id,omitempty"`
-	RootPath     string                `json:"root_path"`
-	Recursive    bool                  `json:"recursive"`
-	Include      []string              `json:"include,omitempty"`
-	Exclude      []string              `json:"exclude,omitempty"`
-	WatchMode    string                `json:"watch_mode"`
-	Parser       string                `json:"parser"`
-	TTLSeconds   *int64                `json:"ttl_seconds,omitempty"`
-	ExpiresAt    *time.Time            `json:"expires_at,omitempty"`
-	PruneMissing bool                  `json:"prune_missing"`
-	Files        []domain.IngestedFile `json:"files"`
-	Caller       domain.CallerIdentity `json:"-"`
+	Namespace         string                `json:"namespace,omitempty"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
+	ScopeType         string                `json:"scope_type"`
+	ScopeID           string                `json:"scope_id,omitempty"`
+	RootPath          string                `json:"root_path"`
+	Recursive         bool                  `json:"recursive"`
+	Include           []string              `json:"include,omitempty"`
+	Exclude           []string              `json:"exclude,omitempty"`
+	WatchMode         string                `json:"watch_mode"`
+	Parser            string                `json:"parser"`
+	TTLSeconds        *int64                `json:"ttl_seconds,omitempty"`
+	ExpiresAt         *time.Time            `json:"expires_at,omitempty"`
+	PruneMissing      bool                  `json:"prune_missing"`
+	Files             []domain.IngestedFile `json:"files"`
+	Caller            domain.CallerIdentity `json:"-"`
 }
 
 // SourceStatusInput queries source and embedding state.
 type SourceStatusInput struct {
-	Namespace      string                `json:"namespace"`
-	NamespaceMatch string                `json:"namespace_match,omitempty" jsonschema:"exact or subtree; default exact"`
-	SourceID       string                `json:"source_id,omitempty"`
-	Path           string                `json:"path,omitempty"`
-	IngestionID    string                `json:"ingestion_id,omitempty"`
-	Limit          int                   `json:"limit,omitempty"`
-	Caller         domain.CallerIdentity `json:"-"`
+	Namespace         string                `json:"namespace,omitempty"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
+	NamespaceMatch    string                `json:"namespace_match,omitempty" jsonschema:"exact or subtree; default exact"`
+	SourceID          string                `json:"source_id,omitempty"`
+	Path              string                `json:"path,omitempty"`
+	IngestionID       string                `json:"ingestion_id,omitempty"`
+	Limit             int                   `json:"limit,omitempty"`
+	Caller            domain.CallerIdentity `json:"-"`
 }
 
 // DeleteSourceInput removes only the server-side source index.
 type DeleteSourceInput struct {
-	Namespace string                `json:"namespace"`
-	SourceID  string                `json:"source_id"`
-	Reason    string                `json:"reason"`
-	Caller    domain.CallerIdentity `json:"-"`
+	Namespace         string                `json:"namespace,omitempty"`
+	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
+	SourceID          string                `json:"source_id"`
+	Reason            string                `json:"reason"`
+	Caller            domain.CallerIdentity `json:"-"`
 }
 
 // HealthResult reports service and dependency status.

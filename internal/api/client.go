@@ -37,7 +37,6 @@ type Client struct {
 	endpoint             string
 	token                string
 	identityFile         string
-	defaultNamespace     string
 	defaultWorkspaceCode string
 	defaultScopeType     string
 	autoRegister         bool
@@ -81,7 +80,6 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		endpoint:             baseURL + "/v1/rpc",
 		token:                cfg.Token,
 		identityFile:         cfg.IdentityFile,
-		defaultNamespace:     cfg.DefaultNamespace,
 		defaultWorkspaceCode: cfg.DefaultWorkspaceCode,
 		defaultScopeType:     cfg.DefaultScopeType,
 		autoRegister:         cfg.AutoRegister,
@@ -91,7 +89,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}, nil
 }
 
-// PutMemory forwards memory_put after applying local namespace and identity defaults.
+// PutMemory forwards memory_put after applying local scope and identity defaults.
 func (c *Client) PutMemory(ctx context.Context, input service.PutMemoryInput) (domain.Memory, error) {
 	caller, err := c.caller(ctx, true)
 	if err != nil {
@@ -175,7 +173,7 @@ func (c *Client) ListNamespaces(ctx context.Context, input service.NamespaceList
 	if err != nil {
 		return domain.NamespaceListResponse{}, err
 	}
-	c.applyNamespace(&input.Parent)
+	input.Parent = strings.ToLower(strings.TrimSpace(input.Parent))
 	input.Caller = caller
 
 	return callRPC[domain.NamespaceListResponse](ctx, c, "namespace_list", input, caller)
@@ -584,9 +582,6 @@ func (c *Client) persistWhoAmI(result service.WhoAmIResult) error {
 }
 
 func (c *Client) applyNamespace(namespace *string) {
-	if strings.TrimSpace(*namespace) == "" {
-		*namespace = c.defaultNamespace
-	}
 	*namespace = strings.ToLower(strings.TrimSpace(*namespace))
 }
 
