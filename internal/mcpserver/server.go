@@ -113,7 +113,7 @@ func New(backend service.Backend, options Options) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "memory-recall-coin", Version: options.Version},
 		&mcp.ServerOptions{
-			Instructions: `Primary workflow: memory_put records durable knowledge, memory_search recalls by meaning or text, memory_list browses by filters without a query, and memory_get reads one exact ID or version. Every memory and source operation requires exactly one namespace selector: the slash-separated namespace path or its stable namespace_sequence. namespace_match defaults to exact, while subtree explicitly includes descendants. Use namespace_list without parent selectors to discover every top-level root, or with exactly one of parent and parent_sequence to browse its descendants. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths.`,
+			Instructions: `Primary workflow: memory_put records durable knowledge, memory_recall performs opinionated recall across explicit namespace roots, memory_search provides low-level retrieval controls, memory_list browses by filters without a query, and memory_get reads one exact ID or version. Every memory and source operation requires explicit namespace paths or stable namespace sequences; workspace inference is never used. namespace_match defaults to exact for low-level tools, while memory_recall defaults to subtree and all_devices. Use namespace_list without parent selectors to discover every top-level root, or with exactly one of parent and parent_sequence to browse descendants. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths.`,
 			Logger:       logger,
 			PageSize:     100,
 		},
@@ -125,35 +125,39 @@ func New(backend service.Backend, options Options) *mcp.Server {
 }
 
 func addTools(server *mcp.Server, handlers *Handlers) {
-	addTypedTool(server, tool("memory_put", "Create a versioned memory with evidence, scope and optional TTL.", false, false, false), handlers.putMemory)
-	addTypedTool(server, tool("memory_patch", "Patch mutable memory fields using optimistic concurrency.", false, true, false), handlers.patchMemory)
-	addTypedTool(server, tool("memory_get", "Read a current memory or historical version by ID.", true, true, false), handlers.getMemory)
-	addTypedTool(server, tool("memory_search", "Recall relevant memories and source chunks by exact, substring, lexical, semantic or hybrid retrieval.", true, true, false), handlers.searchMemory)
-	addTypedTool(server, tool("memory_list", "Browse memories by scope, type, tags, metadata, lifecycle and time filters without a query.", true, true, false), handlers.listMemory)
-	addTypedTool(server, tool("namespace_list", "List every top-level namespace without a parent selector, or browse descendants below exactly one parent path or parent_sequence.", true, true, false), handlers.namespaceList)
-	addTypedTool(server, tool("namespace_delete", "Preview or delete one namespace; recursive deletion also removes its complete subtree and matching local watches.", false, true, true), handlers.deleteNamespace)
-	addTypedTool(server, tool("memory_delete", "Soft-delete a memory while preserving immutable revision history.", false, true, true), handlers.deleteMemory)
-	addTypedTool(server, tool("memory_history", "List append-only revisions for a memory.", true, true, false), handlers.history)
-	addTypedTool(server, tool("memory_restore", "Restore a historical snapshot as a new current version.", false, true, false), handlers.restoreMemory)
-	addTypedTool(server, tool("memory_supersede", "Atomically create a replacement memory and supersede the target.", false, true, false), handlers.supersedeMemory)
-	addTypedTool(server, tool("memory_refute", "Mark a memory refuted and optionally link a refuting memory with evidence.", false, true, true), handlers.refuteMemory)
-	addTypedTool(server, tool("memory_touch", "Extend, set or clear a memory TTL using optimistic concurrency.", false, true, false), handlers.touchMemory)
-	addTypedTool(server, tool("memory_pin", "Clear a memory expiration and preserve the TTL change in history.", false, true, false), handlers.pinMemory)
-	addTypedTool(server, tool("memory_ingest_path", "Scan, hash, upload and optionally watch a local file or directory incrementally.", false, true, false), handlers.ingestPath)
-	addTypedTool(server, tool("memory_ingest_status", "Read source and embedding state for one ingestion job.", true, true, false), handlers.ingestionStatus)
-	addTypedTool(server, tool("memory_source_status", "Read current hash, generation, path, parser, TTL and embedding state for sources.", true, true, false), handlers.sourceStatus)
-	addTypedTool(server, tool("memory_source_delete", "Delete only a server-side source index; never delete the client file.", false, true, true), handlers.deleteSource)
-	addTypedTool(server, tool("memory_watch_list", "List active local filesystem watches and their last synchronization result.", true, true, false), handlers.watchList)
-	addTypedTool(server, tool("memory_watch_stop", "Stop one active local filesystem watch.", false, true, false), handlers.watchStop)
-	addTypedTool(server, tool("device_register", "Register this installation using transient hardware signals and persist its logical identity locally.", false, false, false), handlers.registerDevice)
-	addTypedTool(server, tool("device_claim", "Explicitly bind the current installation to an existing logical device.", false, true, true), handlers.claimDevice)
-	addTypedTool(server, tool("device_migrate", "Merge a source logical device into a canonical target without rewriting provenance.", false, true, true), handlers.migrateDevice)
-	addTypedTool(server, tool("device_whoami", "Resolve the current installation, canonical logical device and workspace identity.", true, true, false), handlers.whoAmI)
-	addTypedTool(server, tool("memory_health", "Check central PostgreSQL and embedding provider status.", true, true, false), handlers.health)
+	catalog := make(toolSchemaCatalog, 26)
+	addTypedTool(server, catalog, tool("memory_put", "Create a versioned memory with evidence, scope and optional TTL.", false, false, false), handlers.putMemory)
+	addTypedTool(server, catalog, tool("memory_patch", "Patch mutable memory fields using optimistic concurrency.", false, true, false), handlers.patchMemory)
+	addTypedTool(server, catalog, tool("memory_get", "Read a current memory or historical version by ID.", true, true, false), handlers.getMemory)
+	addTypedTool(server, catalog, tool("memory_search", "Recall relevant memories and source chunks by exact, substring, lexical, semantic or hybrid retrieval.", true, true, false), handlers.searchMemory)
+	addTypedTool(server, catalog, tool("memory_recall", "Recall memories and source chunks across explicit namespace paths or sequences with fixed hybrid retrieval, subtree and all_devices defaults.", true, true, false), handlers.memoryRecall)
+	addTypedTool(server, catalog, tool("memory_list", "Browse memories by scope, type, tags, metadata, lifecycle and time filters without a query.", true, true, false), handlers.listMemory)
+	addTypedTool(server, catalog, tool("namespace_list", "List every top-level namespace without a parent selector, or browse descendants below exactly one parent path or parent_sequence.", true, true, false), handlers.namespaceList)
+	addTypedTool(server, catalog, tool("namespace_delete", "Preview or delete one namespace; recursive deletion also removes its complete subtree and matching local watches.", false, true, true), handlers.deleteNamespace)
+	addTypedTool(server, catalog, tool("memory_delete", "Soft-delete a memory while preserving immutable revision history.", false, true, true), handlers.deleteMemory)
+	addTypedTool(server, catalog, tool("memory_history", "List append-only revisions for a memory.", true, true, false), handlers.history)
+	addTypedTool(server, catalog, tool("memory_restore", "Restore a historical snapshot as a new current version.", false, true, false), handlers.restoreMemory)
+	addTypedTool(server, catalog, tool("memory_supersede", "Atomically create a replacement memory and supersede the target.", false, true, false), handlers.supersedeMemory)
+	addTypedTool(server, catalog, tool("memory_refute", "Mark a memory refuted and optionally link a refuting memory with evidence.", false, true, true), handlers.refuteMemory)
+	addTypedTool(server, catalog, tool("memory_touch", "Extend, set or clear a memory TTL using optimistic concurrency.", false, true, false), handlers.touchMemory)
+	addTypedTool(server, catalog, tool("memory_pin", "Clear a memory expiration and preserve the TTL change in history.", false, true, false), handlers.pinMemory)
+	addTypedTool(server, catalog, tool("memory_ingest_path", "Scan, hash, upload and optionally watch a local file or directory incrementally.", false, true, false), handlers.ingestPath)
+	addTypedTool(server, catalog, tool("memory_ingest_status", "Read source and embedding state for one ingestion job.", true, true, false), handlers.ingestionStatus)
+	addTypedTool(server, catalog, tool("memory_source_status", "Read source state. Requires a namespace selector plus at least one of source_id, path, or ingestion_id; path is canonical and scope_mode is unsupported.", true, true, false), handlers.sourceStatus)
+	addTypedTool(server, catalog, tool("memory_source_delete", "Delete only a server-side source index; never delete the client file.", false, true, true), handlers.deleteSource)
+	addTypedTool(server, catalog, tool("memory_watch_list", "List active local filesystem watches and their last synchronization result.", true, true, false), handlers.watchList)
+	addTypedTool(server, catalog, tool("memory_watch_stop", "Stop one active local filesystem watch.", false, true, false), handlers.watchStop)
+	addTypedTool(server, catalog, tool("device_register", "Register this installation using transient hardware signals and persist its logical identity locally.", false, false, false), handlers.registerDevice)
+	addTypedTool(server, catalog, tool("device_claim", "Explicitly bind the current installation to an existing logical device.", false, true, true), handlers.claimDevice)
+	addTypedTool(server, catalog, tool("device_migrate", "Merge a source logical device into a canonical target without rewriting provenance.", false, true, true), handlers.migrateDevice)
+	addTypedTool(server, catalog, tool("device_whoami", "Resolve the current installation, canonical logical device and workspace identity.", true, true, false), handlers.whoAmI)
+	addTypedTool(server, catalog, tool("memory_health", "Check central PostgreSQL and embedding provider status.", true, true, false), handlers.health)
+	server.AddReceivingMiddleware(validationErrorMiddleware(catalog))
 }
 
 func addTypedTool[Input, Output any](
 	server *mcp.Server,
+	catalog toolSchemaCatalog,
 	definition *mcp.Tool,
 	handler mcp.ToolHandlerFor[Input, Output],
 ) {
@@ -177,11 +181,15 @@ func addTypedTool[Input, Output any](
 		requireInputProperties(inputSchema, "reason")
 	}
 	applyInputSchemaConstraints(definition.Name, inputSchema)
+	if definition.Name == "memory_recall" {
+		applyRecallInputSchemaConstraints(inputSchema)
+	}
 	if definition.Name == "memory_supersede" {
 		removeNestedNamespaceSelectorRequirements(inputSchema.Properties["replacement"])
 	}
 	applyNamespaceSelectorConstraint(definition.Name, inputSchema)
 	definition.InputSchema = inputSchema
+	catalog[definition.Name] = inputSchema
 	definition.OutputSchema = &jsonschema.Schema{
 		Type:  "object",
 		OneOf: []*jsonschema.Schema{outputSchema, errorSchema},
@@ -373,7 +381,11 @@ func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
 		domain.NamespaceMatchExact,
 		domain.NamespaceMatchSubtree,
 	})
-	setPropertyEnum(schema, "detail_level", []string{"compact", "full"})
+	setPropertyEnum(schema, "detail_level", []string{
+		domain.SearchDetailCompact,
+		domain.SearchDetailEvidence,
+		domain.SearchDetailFull,
+	})
 	setPropertyEnum(schema, "verification_state", []string{
 		"unverified",
 		"supported",
@@ -409,6 +421,15 @@ func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
 	case "memory_history", "memory_source_status":
 		setNumericPropertyRange(schema, "limit", 1, 200)
 	}
+	if toolName == "memory_source_status" {
+		requireAnyInputProperty(schema, "source_id", "path", "ingestion_id")
+		schema.Examples = []any{
+			map[string]any{
+				"namespace": "projects/example",
+				"path":      `D:\dev\example\README.md`,
+			},
+		}
+	}
 
 	switch toolName {
 	case "memory_put", "memory_patch", "memory_supersede":
@@ -424,6 +445,19 @@ func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
 		})
 	case "memory_ingest_path":
 		setPropertyEnum(schema, "watch_mode", []string{"once", "sync", "watch"})
+	}
+}
+
+func requireAnyInputProperty(schema *jsonschema.Schema, names ...string) {
+	if schema == nil {
+		return
+	}
+
+	for _, name := range names {
+		if _, exists := schema.Properties[name]; !exists {
+			continue
+		}
+		schema.AnyOf = append(schema.AnyOf, &jsonschema.Schema{Required: []string{name}})
 	}
 }
 

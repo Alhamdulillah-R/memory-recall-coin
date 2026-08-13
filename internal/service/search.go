@@ -173,7 +173,7 @@ func normalizeSearchInput(input SearchMemoryInput) (SearchMemoryInput, error) {
 		input.DetailLevel = domain.SearchDetailFull
 	}
 	switch input.DetailLevel {
-	case domain.SearchDetailCompact, domain.SearchDetailFull:
+	case domain.SearchDetailCompact, domain.SearchDetailEvidence, domain.SearchDetailFull:
 	default:
 		return SearchMemoryInput{}, NewError(CodeInvalidArgument, "unsupported detail_level")
 	}
@@ -1137,13 +1137,15 @@ func applySearchDetail(results []domain.SearchResult, detailLevel string) {
 	for index := range results {
 		results[index].Content = ""
 		results[index].Metadata = nil
-		results[index].Evidence = nil
 		results[index].DeviceCode = ""
 		results[index].InstallationCode = ""
 		results[index].WorkspaceCode = ""
-		results[index].SourcePath = ""
 		results[index].SourceHash = ""
-		results[index].SourceRange = nil
+		if detailLevel == domain.SearchDetailCompact {
+			results[index].Evidence = nil
+			results[index].SourcePath = ""
+			results[index].SourceRange = nil
+		}
 	}
 }
 

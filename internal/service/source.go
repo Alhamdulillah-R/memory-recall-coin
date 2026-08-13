@@ -175,7 +175,16 @@ func (s *Store) SourceStatus(ctx context.Context, input SourceStatusInput) (doma
 		return domain.SourceStatus{}, NewError(CodeInvalidArgument, "namespace_match must be exact or subtree")
 	}
 	if input.SourceID == "" && input.Path == "" && input.IngestionID == "" {
-		return domain.SourceStatus{}, NewError(CodeInvalidArgument, "source_id, path, or ingestion_id is required")
+		err := NewError(CodeInvalidArgument, "at least one source selector is required")
+		err.Details = map[string]any{
+			"required_any_of": []string{"source_id", "path", "ingestion_id"},
+			"example": map[string]any{
+				"namespace": "projects/example",
+				"path":      `D:\dev\example\README.md`,
+			},
+			"schema_version": "memory_source_status@1",
+		}
+		return domain.SourceStatus{}, err
 	}
 	if input.Limit <= 0 {
 		input.Limit = 50

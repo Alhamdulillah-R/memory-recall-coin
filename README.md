@@ -176,9 +176,9 @@ codex mcp list
 
 也可以在 Codex/ChatGPT desktop 的 `/mcp` 面板检查连接。配置字段参考 [OpenAI 官方 MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
 
-## 25 个 MCP tools
+## 26 个 MCP tools
 
-Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_search` 按语义或文本召回，`memory_list` 无 query 浏览过滤结果，`namespace_list` 浏览 namespace tree，`memory_get` 按 ID/version 精确读取。其余 tools 用于 revision、lifecycle、source ingestion 和 device identity 等高级操作。
+Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_recall` 跨显式 namespace roots 完成 opinionated recall，`memory_search` 提供底层检索控制，`memory_list` 无 query 浏览过滤结果，`namespace_list` 浏览 namespace tree，`memory_get` 按 ID/version 精确读取。其余 tools 用于 revision、lifecycle、source ingestion 和 device identity 等高级操作。
 
 | Tool | 作用 |
 |---|---|
@@ -186,6 +186,7 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_search` 
 | `memory_patch` | 使用 `expected_version` 修改 mutable fields，并追加 revision |
 | `memory_get` | 按 ID 读取当前 memory 或指定历史 version |
 | `memory_search` | 执行 exact、substring、lexical、semantic、temporal、metadata 和 hybrid retrieval |
+| `memory_recall` | 对最多 8 个显式 namespace path/sequence 固定执行 hybrid memory + source_chunk recall，默认 subtree、all_devices 与 evidence response |
 | `memory_list` | 无需 query，按 scope、type、tag、metadata、lifecycle 和时间过滤浏览 memory |
 | `namespace_list` | 不传 parent selector 时列出所有顶级 roots；指定 `parent` 或 `parent_sequence` 时浏览其 namespace tree，并返回 direct/subtree memory 与 source counts |
 | `namespace_delete` | 默认 dry-run 预览 namespace 清理数量；确认后可删除目标或完整 subtree，并停止匹配的本机 watches |
@@ -198,7 +199,7 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_search` 
 | `memory_pin` | 清除 expiration，并把 TTL 变化写入 history |
 | `memory_ingest_path` | 在本机扫描、hash、增量上传并可选 watch 文件或目录；仅 stdio bridge 可读取 path |
 | `memory_ingest_status` | 按 ingestion ID 查询 source 与 embedding 状态 |
-| `memory_source_status` | 按 source/path 查询 hash、generation、parser、TTL 和 embedding 状态 |
+| `memory_source_status` | 在显式 namespace 下按 `source_id`、`path`、`ingestion_id` 至少一个 selector 查询 hash、generation、parser、TTL 和 embedding 状态；不接收 `scope_mode` |
 | `memory_source_delete` | 只删除服务端 source index，绝不删除客户端源文件 |
 | `memory_watch_list` | 列出本机 active filesystem watches 与最近同步结果；仅 stdio bridge |
 | `memory_watch_stop` | 停止指定本机 filesystem watch；仅 stdio bridge |
@@ -242,7 +243,19 @@ namespace 是小写 slash-separated path，例如 `memory-recall-coin/android/an
 
 `memory_search` 和 `memory_list` 默认返回 `detail_level=compact`，保留 title、snippet、scope、status 与 tags。`memory_search` 额外返回可解释 score；`memory_list` 使用独立的 filter-only response，不携带空 query、candidate diagnostics 或全零 score。需要完整 content、metadata、evidence、device identity 和 source provenance 时显式传 `detail_level=full`。`memory_search.min_relevance` 按返回的 `score.relevance` 在 `0..1` 内过滤低相关结果。
 
-Tool 业务错误同时设置 `isError=true` 与 `structuredContent={code,message,details}`；`content` 只保留简短可读文本，因此 `VERSION_CONFLICT` 等调用方可以直接读取 structured details 做自纠正。
+`detail_level=evidence` 保留 evidence、`source_path` 与完整 `source_range`，同时去掉 content、metadata、device identity 与 source hash。高层 `memory_recall` 固定使用该返回粒度，并且不暴露 `retrieval_mode`、`kinds` 或 `candidate_limit`：
+
+```json
+{
+  "query": "Akamai pte pnte 含义",
+  "namespaces": ["projects/rex-mirror-realm/akamai"],
+  "namespace_sequences": [42]
+}
+```
+
+`namespaces` 与 `namespace_sequences` 可以混用，总数最多 8 个。`memory_recall` 默认 `namespace_match=subtree`、`scope_mode=all_devices`，固定同时搜索 memory 与 source chunk，跨重叠 roots 去重后统一排序；每次 namespace lookup 的 resolved path、命中数、semantic 状态与耗时会放在 `attempts`。
+
+Tool 业务错误同时设置 `isError=true` 与 `structuredContent={code,message,details}`；`content` 只保留简短可读文本，因此 `VERSION_CONFLICT` 等调用方可以直接读取 structured details 做自纠正。MCP schema validation error 也返回 field-level reason、近似字段 suggestion、required selector group、example 与 `schema_version`。
 
 默认检索行为是 `scope_mode=prefer_local`，同时排除 expired、refuted、superseded 和 deleted 记录。mutation 应携带 `expected_version`；可能重试的 write 应携带稳定 `idempotency_key`。
 

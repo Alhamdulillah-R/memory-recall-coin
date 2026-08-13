@@ -351,6 +351,7 @@ memory_put
 memory_patch
 memory_get
 memory_search
+memory_recall
 memory_list
 namespace_list
 namespace_delete
@@ -386,6 +387,10 @@ include_expired = false
 include_refuted = false
 include_superseded = false
 ```
+
+`memory_recall` 是 stdio MCP 的 opinionated 聚合层，不新增 central RPC。调用方必须显式给出 `namespaces` 或 `namespace_sequences`，两组可混用且总数最多 8 个；默认 `namespace_match=subtree`、`scope_mode=all_devices`，固定执行 hybrid retrieval，并同时检索 memory 与 source chunk。wrapper 以 evidence 粒度保留 source path/range，跨重叠 roots 去重、全局排序，并返回每个 selector 的 resolved namespace 与 semantic 状态。
+
+`memory_search` 和 `memory_list` 支持 `detail_level=compact|evidence|full`。evidence 层保留 evidence、source path/range，同时移除 content、metadata、device identity 和 source hash。
 
 ## 12. 性能约束
 

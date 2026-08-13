@@ -29,8 +29,9 @@ const (
 )
 
 const (
-	SearchDetailCompact = "compact"
-	SearchDetailFull    = "full"
+	SearchDetailCompact  = "compact"
+	SearchDetailEvidence = "evidence"
+	SearchDetailFull     = "full"
 )
 
 const (

@@ -85,7 +85,7 @@ type SearchMemoryInput struct {
 	Query             string                `json:"query"`
 	RetrievalMode     string                `json:"retrieval_mode,omitempty" jsonschema:"hybrid, exact, substring, lexical, or semantic; default hybrid"`
 	ScopeMode         string                `json:"scope_mode,omitempty" jsonschema:"prefer_local, local_only, project_only, or all_devices"`
-	DetailLevel       string                `json:"detail_level,omitempty" jsonschema:"compact or full; default compact"`
+	DetailLevel       string                `json:"detail_level,omitempty" jsonschema:"compact, evidence, or full; default compact"`
 	MinRelevance      *float64              `json:"min_relevance,omitempty" jsonschema:"minimum returned score.relevance from 0 to 1"`
 	Kinds             []string              `json:"kinds,omitempty" jsonschema:"result kinds: memory or source_chunk"`
 	TagsAny           []string              `json:"tags_any,omitempty"`
@@ -114,7 +114,7 @@ type ListMemoryInput struct {
 	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
 	NamespaceMatch    string                `json:"namespace_match,omitempty" jsonschema:"exact or subtree; default exact"`
 	ScopeMode         string                `json:"scope_mode,omitempty" jsonschema:"prefer_local, local_only, project_only, or all_devices"`
-	DetailLevel       string                `json:"detail_level,omitempty" jsonschema:"compact or full; default compact"`
+	DetailLevel       string                `json:"detail_level,omitempty" jsonschema:"compact, evidence, or full; default compact"`
 	TagsAny           []string              `json:"tags_any,omitempty"`
 	TagsAll           []string              `json:"tags_all,omitempty"`
 	MetadataContains  map[string]any        `json:"metadata_contains,omitempty"`
@@ -338,9 +338,9 @@ type SourceStatusInput struct {
 	Namespace         string                `json:"namespace,omitempty"`
 	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
 	NamespaceMatch    string                `json:"namespace_match,omitempty" jsonschema:"exact or subtree; default exact"`
-	SourceID          string                `json:"source_id,omitempty"`
-	Path              string                `json:"path,omitempty"`
-	IngestionID       string                `json:"ingestion_id,omitempty"`
+	SourceID          string                `json:"source_id,omitempty" jsonschema:"source ID selector; may be combined with path or ingestion_id"`
+	Path              string                `json:"path,omitempty" jsonschema:"canonical file path selector; source_path is not accepted by this tool"`
+	IngestionID       string                `json:"ingestion_id,omitempty" jsonschema:"ingestion job selector; may be combined with source_id or path"`
 	Limit             int                   `json:"limit,omitempty"`
 	Caller            domain.CallerIdentity `json:"-"`
 }
