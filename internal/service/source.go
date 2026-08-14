@@ -60,7 +60,7 @@ func (s *Store) SyncSources(ctx context.Context, input SyncSourcesInput) (domain
 		return domain.IngestionSummary{}, err
 	}
 	defer rollback(tx)
-	if err := ensureNamespace(ctx, tx, normalized.Namespace); err != nil {
+	if err := assertNamespaceActive(ctx, tx, normalized.Namespace); err != nil {
 		return domain.IngestionSummary{}, err
 	}
 

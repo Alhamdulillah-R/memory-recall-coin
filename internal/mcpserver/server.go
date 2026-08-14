@@ -113,7 +113,7 @@ func New(backend service.Backend, options Options) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "memory-recall-coin", Version: options.Version},
 		&mcp.ServerOptions{
-			Instructions: `Primary workflow: memory_put records durable knowledge, memory_recall performs opinionated recall across explicit namespace roots, memory_search provides low-level retrieval controls, memory_list browses by filters without a query, and memory_get reads one exact ID or version. Every memory and source operation requires explicit namespace paths or stable namespace sequences; workspace inference is never used. namespace_match defaults to exact for low-level tools, while memory_recall defaults to subtree and all_devices. Use namespace_list without parent selectors to discover every top-level root, or with exactly one of parent and parent_sequence to browse descendants. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths.`,
+			Instructions: `Primary workflow: memory_put records durable knowledge, memory_recall performs opinionated recall across explicit namespace roots, memory_search provides low-level retrieval controls, memory_list browses by filters without a query, and memory_get reads one exact ID or version. Every memory and source operation requires an existing explicit namespace path or stable namespace sequence; writes never create namespaces implicitly. Use namespace_create to create one node at a time; a child requires its direct parent to exist. Workspace inference is never used. namespace_match defaults to exact for low-level tools, while memory_recall defaults to subtree and all_devices. Use namespace_list without parent selectors to discover every top-level root, or with exactly one of parent and parent_sequence to browse descendants. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths.`,
 			Logger:       logger,
 			PageSize:     100,
 		},
@@ -125,13 +125,14 @@ func New(backend service.Backend, options Options) *mcp.Server {
 }
 
 func addTools(server *mcp.Server, handlers *Handlers) {
-	catalog := make(toolSchemaCatalog, 26)
+	catalog := make(toolSchemaCatalog, 27)
 	addTypedTool(server, catalog, tool("memory_put", "Create a versioned memory with evidence, scope and optional TTL.", false, false, false), handlers.putMemory)
 	addTypedTool(server, catalog, tool("memory_patch", "Patch mutable memory fields using optimistic concurrency.", false, true, false), handlers.patchMemory)
 	addTypedTool(server, catalog, tool("memory_get", "Read a current memory or historical version by ID.", true, true, false), handlers.getMemory)
 	addTypedTool(server, catalog, tool("memory_search", "Recall relevant memories and source chunks by exact, substring, lexical, semantic or hybrid retrieval.", true, true, false), handlers.searchMemory)
 	addTypedTool(server, catalog, tool("memory_recall", "Recall memories and source chunks across explicit namespace paths or sequences with fixed hybrid retrieval, subtree and all_devices defaults.", true, true, false), handlers.memoryRecall)
 	addTypedTool(server, catalog, tool("memory_list", "Browse memories by scope, type, tags, metadata, lifecycle and time filters without a query.", true, true, false), handlers.listMemory)
+	addTypedTool(server, catalog, tool("namespace_create", "Explicitly create one namespace; its direct parent must already exist.", false, true, false), handlers.namespaceCreate)
 	addTypedTool(server, catalog, tool("namespace_list", "List every top-level namespace without a parent selector, or browse descendants below exactly one parent path or parent_sequence.", true, true, false), handlers.namespaceList)
 	addTypedTool(server, catalog, tool("namespace_delete", "Preview or delete one namespace; recursive deletion also removes its complete subtree and matching local watches.", false, true, true), handlers.deleteNamespace)
 	addTypedTool(server, catalog, tool("memory_delete", "Soft-delete a memory while preserving immutable revision history.", false, true, true), handlers.deleteMemory)
@@ -177,6 +178,9 @@ func addTypedTool[Input, Output any](
 	repairRawJSONProperties(inputSchema)
 	repairRawJSONProperties(outputSchema)
 	relaxLocalInputDefaults(inputSchema)
+	if definition.Name == "namespace_create" {
+		requireInputProperties(inputSchema, "namespace")
+	}
 	if definition.Name == "namespace_delete" {
 		requireInputProperties(inputSchema, "reason")
 	}
@@ -776,6 +780,11 @@ func (h *Handlers) listMemory(ctx context.Context, _ *mcp.CallToolRequest, input
 
 func (h *Handlers) namespaceList(ctx context.Context, _ *mcp.CallToolRequest, input service.NamespaceListInput) (*mcp.CallToolResult, domain.NamespaceListResponse, error) {
 	result, err := h.backend.ListNamespaces(ctx, input)
+	return nil, result, err
+}
+
+func (h *Handlers) namespaceCreate(ctx context.Context, _ *mcp.CallToolRequest, input service.NamespaceCreateInput) (*mcp.CallToolResult, domain.NamespaceCreateResult, error) {
+	result, err := h.backend.CreateNamespace(ctx, input)
 	return nil, result, err
 }
 

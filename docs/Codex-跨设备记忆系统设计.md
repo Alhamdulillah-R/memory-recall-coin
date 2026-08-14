@@ -36,7 +36,7 @@ personal-global
 
 所有 memory、source、revision 和 chunk 必须属于一个 exact namespace。写入 leaf 时自动建立缺失的 ancestors。所有 memory/source 操作都必须显式传且只能传一个 selector：`namespace` path 或持久 `namespace_sequence`。sequence 是非负整数，`0` 合法；workspace config 与服务端均不得自动补齐或根据当前目录猜测。
 
-读取默认使用 `namespace_match=exact`；只有显式传 `subtree` 才包含 descendants。`namespace_list` 不传 parent selector 时从全库顶层返回所有 roots；否则只能传 `parent` path 或 `parent_sequence` 之一。response 的 `parent` 始终是解析后的 canonical path，nodes 包含持久 `sequence`、parent、child paths、direct/subtree counts 与 status，可用 `next_cursor` 完整分页，不依赖 workspace default 或语义推断。`namespace_delete` 必须传 `namespace`/`namespace_sequence` 之一及 reason，默认 `dry_run=true`；非递归删除遇到 active child 时拒绝执行，递归删除会 hard purge 整棵 subtree 的 memory、source、embedding、ingestion 与 watch registration，并保留不可复用的 tombstone。
+读取默认使用 `namespace_match=exact`；只有显式传 `subtree` 才包含 descendants。memory/source 写入只接受已经存在的 active namespace，不会隐式创建节点。`namespace_create` 每次只创建一个节点；root 可直接创建，child 的 direct parent 必须已存在且 active。`namespace_list` 不传 parent selector 时从全库顶层返回所有 roots；否则只能传 `parent` path 或 `parent_sequence` 之一。response 的 `parent` 始终是解析后的 canonical path，nodes 包含持久 `sequence`、parent、child paths、direct/subtree counts 与 status，可用 `next_cursor` 完整分页，不依赖 workspace default 或语义推断。`namespace_delete` 必须传 `namespace`/`namespace_sequence` 之一及 reason，默认 `dry_run=true`；非递归删除遇到 active child 时拒绝执行，递归删除会 hard purge整棵 subtree 的 memory、source、embedding、ingestion 与 watch registration，并保留不可复用的 tombstone。
 
 ### 2.2 device_code
 
@@ -353,6 +353,7 @@ memory_get
 memory_search
 memory_recall
 memory_list
+namespace_create
 namespace_list
 namespace_delete
 memory_delete

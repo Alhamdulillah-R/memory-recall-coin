@@ -85,7 +85,7 @@ func (s *Store) PutMemory(ctx context.Context, input PutMemoryInput) (domain.Mem
 		return domain.Memory{}, err
 	}
 	defer rollback(tx)
-	if err := ensureNamespace(ctx, tx, normalized.Namespace); err != nil {
+	if err := assertNamespaceActive(ctx, tx, normalized.Namespace); err != nil {
 		return domain.Memory{}, err
 	}
 
@@ -198,7 +198,7 @@ func (s *Store) insertMemoryTx(
 	input PutMemoryInput,
 	actor string,
 ) (domain.Memory, error) {
-	if err := ensureNamespace(ctx, tx, input.Namespace); err != nil {
+	if err := assertNamespaceActive(ctx, tx, input.Namespace); err != nil {
 		return domain.Memory{}, err
 	}
 

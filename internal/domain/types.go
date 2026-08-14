@@ -332,6 +332,16 @@ type NamespaceSummary struct {
 	SubtreeSourceCount int64      `json:"subtree_source_count"`
 }
 
+// NamespaceCreateResult reports an explicit namespace creation or an existing active namespace.
+type NamespaceCreateResult struct {
+	Namespace string `json:"namespace"`
+	Sequence  int64  `json:"sequence"`
+	Parent    string `json:"parent,omitempty"`
+	Segment   string `json:"segment"`
+	Status    string `json:"status"`
+	Created   bool   `json:"created"`
+}
+
 // NamespaceListResponse contains a bounded namespace tree rooted at Parent.
 type NamespaceListResponse struct {
 	Parent     string             `json:"parent"`

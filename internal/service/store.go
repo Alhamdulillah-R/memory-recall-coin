@@ -76,7 +76,7 @@ func rollback(tx pgx.Tx) {
 /**
  * resolveNamespaceSelector resolves exactly one namespace path or persistent sequence.
  * @param ctx request context
- * @param namespace canonical path selector; a new path is allowed for write operations
+ * @param namespace canonical path selector
  * @param sequence persistent namespace sequence; it must already exist
  * @return canonical namespace path
  */
@@ -131,28 +131,6 @@ func (s *Store) resolveOptionalNamespaceSelector(
 	}
 
 	return s.resolveNamespaceSelector(ctx, namespace, sequence)
-}
-
-func ensureNamespace(ctx context.Context, tx pgx.Tx, namespace string) error {
-	if err := lockNamespaceCatalog(ctx, tx, false); err != nil {
-		return err
-	}
-	ancestors, err := lockNamespaceHierarchy(ctx, tx, namespace)
-	if err != nil {
-		return err
-	}
-	for _, ancestor := range ancestors {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO namespaces(code)
-			SELECT $1
-			WHERE NOT EXISTS (SELECT 1 FROM namespaces WHERE code = $1)
-			ON CONFLICT DO NOTHING
-		`, ancestor); err != nil {
-			return WrapError(CodeInternal, "ensure namespace hierarchy", err)
-		}
-	}
-
-	return rejectDeletedNamespace(ctx, tx, namespace, ancestors)
 }
 
 func assertNamespaceActive(ctx context.Context, tx pgx.Tx, namespace string) error {

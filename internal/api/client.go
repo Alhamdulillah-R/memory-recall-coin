@@ -179,6 +179,21 @@ func (c *Client) ListNamespaces(ctx context.Context, input service.NamespaceList
 	return callRPC[domain.NamespaceListResponse](ctx, c, "namespace_list", input, caller)
 }
 
+// CreateNamespace forwards explicit namespace creation without applying workspace defaults.
+func (c *Client) CreateNamespace(
+	ctx context.Context,
+	input service.NamespaceCreateInput,
+) (domain.NamespaceCreateResult, error) {
+	caller, err := c.caller(ctx, true)
+	if err != nil {
+		return domain.NamespaceCreateResult{}, err
+	}
+	input.Namespace = strings.ToLower(strings.TrimSpace(input.Namespace))
+	input.Caller = caller
+
+	return callRPC[domain.NamespaceCreateResult](ctx, c, "namespace_create", input, caller)
+}
+
 // DeleteNamespace forwards namespace deletion previews and confirmed cleanup.
 func (c *Client) DeleteNamespace(ctx context.Context, input service.NamespaceDeleteInput) (domain.NamespaceDeleteResult, error) {
 	caller, err := c.caller(ctx, true)

@@ -176,6 +176,12 @@ type NamespaceListInput struct {
 	Caller         domain.CallerIdentity `json:"-"`
 }
 
+// NamespaceCreateInput explicitly creates one namespace whose direct parent already exists.
+type NamespaceCreateInput struct {
+	Namespace string                `json:"namespace" jsonschema:"new slash-separated namespace path; direct parent must already exist"`
+	Caller    domain.CallerIdentity `json:"-"`
+}
+
 // NamespaceDeleteInput previews or deletes one namespace and optionally its subtree.
 type NamespaceDeleteInput struct {
 	Namespace         string                `json:"namespace,omitempty" jsonschema:"target namespace path; mutually exclusive with namespace_sequence"`
@@ -370,6 +376,7 @@ type Backend interface {
 	GetMemory(context.Context, GetMemoryInput) (domain.Memory, error)
 	SearchMemory(context.Context, SearchMemoryInput) (domain.SearchResponse, error)
 	ListMemory(context.Context, ListMemoryInput) (domain.MemoryListResponse, error)
+	CreateNamespace(context.Context, NamespaceCreateInput) (domain.NamespaceCreateResult, error)
 	ListNamespaces(context.Context, NamespaceListInput) (domain.NamespaceListResponse, error)
 	DeleteNamespace(context.Context, NamespaceDeleteInput) (domain.NamespaceDeleteResult, error)
 	DeleteMemory(context.Context, DeleteMemoryInput) (domain.Memory, error)

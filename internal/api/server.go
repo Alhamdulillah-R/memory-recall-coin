@@ -139,6 +139,8 @@ func (s *Server) dispatch(ctx context.Context, request incomingRPCRequest) (any,
 		return dispatchInput(ctx, request, s.backend.SearchMemory)
 	case "memory_list":
 		return dispatchInput(ctx, request, s.backend.ListMemory)
+	case "namespace_create":
+		return dispatchInput(ctx, request, s.backend.CreateNamespace)
 	case "namespace_list":
 		return dispatchInput(ctx, request, s.backend.ListNamespaces)
 	case "namespace_delete":

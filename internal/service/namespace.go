@@ -10,6 +10,104 @@ import (
 )
 
 /**
+ * CreateNamespace explicitly creates one namespace after verifying its direct parent.
+ * @return created namespace identity, or the existing active namespace
+ */
+func (s *Store) CreateNamespace(
+	ctx context.Context,
+	input NamespaceCreateInput,
+) (domain.NamespaceCreateResult, error) {
+	namespace, err := normalizeNamespace(input.Namespace)
+	if err != nil {
+		return domain.NamespaceCreateResult{}, err
+	}
+	parent, segment := splitNamespace(namespace)
+	actor := normalizeActor("", input.Caller)
+	tx, err := s.beginMutation(ctx, actor, "create namespace")
+	if err != nil {
+		return domain.NamespaceCreateResult{}, err
+	}
+	defer rollback(tx)
+	if err := lockNamespaceCatalog(ctx, tx, false); err != nil {
+		return domain.NamespaceCreateResult{}, err
+	}
+	if _, err := lockNamespaceDeletionHierarchy(ctx, tx, namespace); err != nil {
+		return domain.NamespaceCreateResult{}, err
+	}
+
+	var sequence int64
+	var status string
+	err = tx.QueryRow(ctx, `
+		SELECT sequence_number, lifecycle_status
+		FROM namespaces
+		WHERE code = $1
+		FOR UPDATE
+	`, namespace).Scan(&sequence, &status)
+	if err == nil {
+		if status != "active" {
+			return domain.NamespaceCreateResult{}, NewError(CodeFailedPrecondition, "namespace is deleted")
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return domain.NamespaceCreateResult{}, WrapError(CodeInternal, "finish existing namespace lookup", err)
+		}
+
+		return domain.NamespaceCreateResult{
+			Namespace: namespace,
+			Sequence:  sequence,
+			Parent:    parent,
+			Segment:   segment,
+			Status:    status,
+			Created:   false,
+		}, nil
+	}
+	if !errorsIsNoRows(err) {
+		return domain.NamespaceCreateResult{}, WrapError(CodeInternal, "inspect namespace", err)
+	}
+
+	if parent != "" {
+		var parentStatus string
+		err := tx.QueryRow(ctx, `
+			SELECT lifecycle_status
+			FROM namespaces
+			WHERE code = $1
+			FOR SHARE
+		`, parent).Scan(&parentStatus)
+		if errorsIsNoRows(err) {
+			serviceErr := NewError(CodeFailedPrecondition, "parent namespace does not exist")
+			serviceErr.Details = map[string]any{"parent": parent, "namespace": namespace}
+
+			return domain.NamespaceCreateResult{}, serviceErr
+		}
+		if err != nil {
+			return domain.NamespaceCreateResult{}, WrapError(CodeInternal, "inspect parent namespace", err)
+		}
+		if parentStatus != "active" {
+			return domain.NamespaceCreateResult{}, NewError(CodeFailedPrecondition, "parent namespace is deleted")
+		}
+	}
+
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO namespaces(code)
+		VALUES ($1)
+		RETURNING sequence_number, lifecycle_status
+	`, namespace).Scan(&sequence, &status); err != nil {
+		return domain.NamespaceCreateResult{}, WrapError(CodeInternal, "create namespace", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.NamespaceCreateResult{}, WrapError(CodeInternal, "commit namespace creation", err)
+	}
+
+	return domain.NamespaceCreateResult{
+		Namespace: namespace,
+		Sequence:  sequence,
+		Parent:    parent,
+		Segment:   segment,
+		Status:    status,
+		Created:   true,
+	}, nil
+}
+
+/**
  * ListNamespaces browses known descendants of one namespace path.
  * @return namespace summaries ordered by their canonical path
  */
@@ -424,4 +522,13 @@ func namespaceContains(parent, namespace string, includeParent bool) bool {
 	}
 
 	return strings.HasPrefix(namespace, parent+"/")
+}
+
+func splitNamespace(namespace string) (string, string) {
+	separator := strings.LastIndex(namespace, "/")
+	if separator < 0 {
+		return "", namespace
+	}
+
+	return namespace[:separator], namespace[separator+1:]
 }

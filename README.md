@@ -176,7 +176,7 @@ codex mcp list
 
 也可以在 Codex/ChatGPT desktop 的 `/mcp` 面板检查连接。配置字段参考 [OpenAI 官方 MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
 
-## 26 个 MCP tools
+## 27 个 MCP tools
 
 Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_recall` 跨显式 namespace roots 完成 opinionated recall，`memory_search` 提供底层检索控制，`memory_list` 无 query 浏览过滤结果，`namespace_list` 浏览 namespace tree，`memory_get` 按 ID/version 精确读取。其余 tools 用于 revision、lifecycle、source ingestion 和 device identity 等高级操作。
 
@@ -188,6 +188,7 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_recall` 
 | `memory_search` | 执行 exact、substring、lexical、semantic、temporal、metadata 和 hybrid retrieval |
 | `memory_recall` | 对最多 8 个显式 namespace path/sequence 固定执行 hybrid memory + source_chunk recall，默认 subtree、all_devices 与 evidence response |
 | `memory_list` | 无需 query，按 scope、type、tag、metadata、lifecycle 和时间过滤浏览 memory |
+| `namespace_create` | 显式创建一个 namespace；创建 child 前 direct parent 必须已存在且 active，重复创建 active namespace 为幂等返回 |
 | `namespace_list` | 不传 parent selector 时列出所有顶级 roots；指定 `parent` 或 `parent_sequence` 时浏览其 namespace tree，并返回 direct/subtree memory 与 source counts |
 | `namespace_delete` | 默认 dry-run 预览 namespace 清理数量；确认后可删除目标或完整 subtree，并停止匹配的本机 watches |
 | `memory_delete` | soft delete memory，保留 revision history |
@@ -219,7 +220,7 @@ namespace 是小写 slash-separated path，例如 `memory-recall-coin/android/an
 {"query":"Frida detection","namespace_sequence":42,"namespace_match":"subtree"}
 ```
 
-`namespace_list` 是唯一的 namespace discovery tool；namespace 随写入隐式建立，不提供 create/rename tool。不传 `parent`/`parent_sequence`（或传 `parent=""`）时从全库顶层开始，返回所有 top-level roots；否则必须且只能传一个非空 `parent` path 或 `parent_sequence`。默认 `depth=1`、`limit=100`，response 的 `parent` 始终是解析后的 canonical path，每项返回持久 `sequence`、parent、child count、direct/subtree counts 和 status。全库遍历按返回的 `next_cursor` 继续分页，不依赖 workspace default 或内容推断。
+namespace 不再随 memory/source 写入隐式创建。新节点必须先调用 `namespace_create`；root 可直接创建，child 只能在 direct parent 已存在且 active 时创建，因此 `x/y/z` 必须按 `x` → `x/y` → `x/y/z` 顺序建立。`namespace_list` 不传 `parent`/`parent_sequence`（或传 `parent=""`）时从全库顶层开始，返回所有 top-level roots；否则必须且只能传一个非空 `parent` path 或 `parent_sequence`。默认 `depth=1`、`limit=100`，response 的 `parent` 始终是解析后的 canonical path，每项返回持久 `sequence`、parent、child count、direct/subtree counts 和 status。全库遍历按返回的 `next_cursor` 继续分页，不依赖 workspace default 或内容推断。
 
 ```json
 {"parent":"","depth":16,"limit":200}
