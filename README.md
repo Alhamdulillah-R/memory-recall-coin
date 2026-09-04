@@ -182,7 +182,7 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_recall` 
 
 | Tool | 作用 |
 |---|---|
-| `memory_put` | 创建带 scope、evidence、TTL 和 idempotency key 的 versioned memory；同 namespace 存在近似重复时拒绝写入，回传 compact receipt |
+| `memory_put` | 创建带必填 `summary`、scope、evidence、TTL 和 idempotency key 的 versioned memory；同 namespace 存在近似重复时拒绝写入，回传 compact receipt |
 | `memory_patch` | 使用 `expected_version` 修改 mutable fields，并追加 revision；`append_content` 追加内容而不必重送整段 |
 | `memory_get` | 按 ID 读取当前 memory 或指定历史 version |
 | `memory_search` | 执行 exact、substring、lexical、semantic、temporal、metadata 和 hybrid retrieval；省略 namespace selector 时搜索全库 |
@@ -223,6 +223,8 @@ namespace 是小写 slash-separated path，例如 `memory-recall-coin/android/an
 ```json
 {"query":"好像是 timer 的问题"}
 ```
+
+`memory_put` 与 `memory_supersede.replacement` 必须带 `summary`：1–3 句、最多 500 字，写结论和适用条件，给未来的 agent 判断要不要读全文；缺失或超长返回 `INVALID_ARGUMENT`。`summary` 与 title 同权重进入 full-text 与 trigram 索引，并参与 embedding（`title\nsummary\ncontent`），`memory_search`、`memory_recall`、`memory_list`、`memory_get` 在所有 `detail_level` 下都返回 `summary`，与按 query 定位的 `snippet` 并存。migration 009 之前写入的 memory 没有 summary，结果中不带该字段；用 `memory_patch` 的 `summary` 补上即可。
 
 `memory_put` 省略 `scope_type` 时：本机有 workspace code 用 `workspace`，否则用 `global`；显式要求 `workspace` 但推断不到 `scope_id` 时返回 `INVALID_ARGUMENT`，details 列出可用 `scope_type` 与设置方式。所有时间输入（`observed_at`、`expires_at`、`created_after` 等）接受 RFC3339、`YYYY-MM-DD` 或 `YYYY-MM-DD HH:MM:SS`（无时区按 UTC），格式错误返回带 `accepted_formats` 的 `INVALID_ARGUMENT`。
 

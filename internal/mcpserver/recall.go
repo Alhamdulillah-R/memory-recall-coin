@@ -40,6 +40,7 @@ type RecallResult struct {
 	Namespace         string          `json:"namespace"`
 	Type              string          `json:"type,omitempty"`
 	Title             string          `json:"title"`
+	Summary           string          `json:"summary,omitempty"`
 	Snippet           string          `json:"snippet"`
 	Tags              []string        `json:"tags,omitempty"`
 	Status            string          `json:"status"`
@@ -253,6 +254,7 @@ func projectRecallResults(results []domain.SearchResult) []RecallResult {
 			Namespace:         result.Namespace,
 			Type:              result.Type,
 			Title:             result.Title,
+			Summary:           result.Summary,
 			Snippet:           result.Snippet,
 			Tags:              result.Tags,
 			Status:            result.Status,

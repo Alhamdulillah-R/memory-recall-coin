@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -74,6 +75,7 @@ func validationErrorMiddleware(catalog toolSchemaCatalog) mcp.Middleware {
 
 			arguments, argumentErr := decodeToolArguments(params.Arguments)
 			errors := diagnoseValidationErrors(schema, arguments, argumentErr)
+			errors = append(errors, nestedRequiredErrors(rawValidationError)...)
 			details := validationErrorDetails(
 				params.Name,
 				schema,
@@ -225,6 +227,27 @@ func missingRequiredErrors(
 			Field:  field,
 			Reason: "required",
 		})
+	}
+
+	return errors
+}
+
+// SDK 對巢狀 object（例如 memory_supersede.replacement）缺欄位只給原文，這裡把它翻成 field error
+var nestedRequiredPattern = regexp.MustCompile(`validating /properties/([A-Za-z0-9_]+): required: missing properties: \[([^\]]*)\]`)
+
+func nestedRequiredErrors(rawValidationError string) []validationFieldError {
+	errors := make([]validationFieldError, 0)
+	for _, match := range nestedRequiredPattern.FindAllStringSubmatch(rawValidationError, -1) {
+		for _, name := range strings.Split(match[2], ",") {
+			name = strings.Trim(strings.TrimSpace(name), `"`)
+			if name == "" {
+				continue
+			}
+			errors = append(errors, validationFieldError{
+				Field:  match[1] + "." + name,
+				Reason: "required",
+			})
+		}
 	}
 
 	return errors

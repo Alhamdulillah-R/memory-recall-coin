@@ -19,7 +19,7 @@ import (
 const memoryColumns = `
     id, namespace, scope_type, scope_id,
     coalesce(device_code, ''), coalesce(installation_code, ''), coalesce(workspace_code, ''),
-    memory_type, title, content, metadata, tags, lifecycle_status, verification_state,
+    memory_type, title, coalesce(summary, ''), content, metadata, tags, lifecycle_status, verification_state,
     confidence, evidence, coalesce(source_id, ''), coalesce(source_path, ''),
     coalesce(source_hash, ''), source_range, expires_at, version,
     coalesce(supersedes_id, ''), created_by, updated_by, created_at, updated_at, observed_at
@@ -39,6 +39,7 @@ type memorySnapshot struct {
 	WorkspaceCode     string          `json:"workspace_code"`
 	MemoryType        string          `json:"memory_type"`
 	Title             string          `json:"title"`
+	Summary           string          `json:"summary"`
 	Content           string          `json:"content"`
 	Metadata          json.RawMessage `json:"metadata"`
 	Tags              []string        `json:"tags"`
@@ -153,6 +154,10 @@ func normalizePutInput(input PutMemoryInput) (PutMemoryInput, error) {
 	if err := requireNonEmpty("title", input.Title); err != nil {
 		return PutMemoryInput{}, err
 	}
+	input.Summary = strings.TrimSpace(input.Summary)
+	if err := validateSummary(input.Summary); err != nil {
+		return PutMemoryInput{}, err
+	}
 	if err := requireNonEmpty("content", input.Content); err != nil {
 		return PutMemoryInput{}, err
 	}
@@ -231,12 +236,12 @@ func (s *Store) insertMemoryTx(
             id, namespace, scope_type, scope_id, device_code, installation_code, workspace_code,
             memory_type, title, content, metadata, tags, verification_state, confidence, evidence,
             source_id, source_path, source_hash, source_range, observed_at, expires_at,
-            supersedes_id, created_by, updated_by
+            supersedes_id, created_by, updated_by, summary
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12, $13, $14, $15,
             $16, $17, $18, $19, $20, $21,
-            $22, $23, $23
+            $22, $23, $23, $24
         )
         RETURNING `+memoryColumns,
 		input.ID,
@@ -262,6 +267,7 @@ func (s *Store) insertMemoryTx(
 		input.ExpiresAt.TimeValue(),
 		nullableString(input.SupersedesID),
 		input.CreatedBy,
+		input.Summary,
 	)
 
 	memory, err := scanMemory(row)
@@ -328,6 +334,14 @@ func (s *Store) PatchMemory(ctx context.Context, input PatchMemoryInput) (domain
 			return domain.Memory{}, err
 		}
 		add("title = $%d", strings.TrimSpace(*input.Title))
+		contentChanged = true
+	}
+	if input.Summary != nil {
+		summary := strings.TrimSpace(*input.Summary)
+		if err := validateSummary(summary); err != nil {
+			return domain.Memory{}, err
+		}
+		add("summary = $%d", summary)
 		contentChanged = true
 	}
 	if input.Content != nil && input.AppendContent != nil {
@@ -746,6 +760,7 @@ func (s *Store) RestoreMemory(ctx context.Context, input RestoreMemoryInput) (do
             evidence = $14, source_id = $15, source_path = $16, source_hash = $17,
             source_range = $18, observed_at = $19, expires_at = $20,
             supersedes_id = $21, version = version + 1, updated_by = $22,
+			summary = $23,
 			updated_at = statement_timestamp(), embedding = NULL,
 			embedding_model = NULL, embedded_at = NULL,
 			deleted_at = CASE WHEN $11 = 'deleted' THEN statement_timestamp() ELSE NULL END
@@ -773,6 +788,7 @@ func (s *Store) RestoreMemory(ctx context.Context, input RestoreMemoryInput) (do
 		snapshot.ExpiresAt,
 		nullableString(snapshot.SupersedesID),
 		actor,
+		nullableString(snapshot.Summary),
 	))
 	if errorsIsNoRows(err) {
 		return domain.Memory{}, s.versionConflict(ctx, tx, input.Namespace, input.ID, input.ExpectedVersion)
@@ -1260,7 +1276,7 @@ func (s *Store) enqueueMemoryEmbedding(ctx context.Context, tx pgx.Tx, memory do
 		return nil
 	}
 
-	contentHash := hashText(memory.Title + "\n" + memory.Content)
+	contentHash := hashText(embeddingText(memory))
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO embedding_jobs(
 			target_type, target_id, namespace, content_hash, embedding_model, status, available_at
@@ -1278,6 +1294,11 @@ func (s *Store) enqueueMemoryEmbedding(ctx context.Context, tx pgx.Tx, memory do
 	return nil
 }
 
+// embeddingText 必須與 embedding_worker.go 裡的 SQL 表達式一致，否則 job hash 對不上
+func embeddingText(memory domain.Memory) string {
+	return memory.Title + "\n" + memory.Summary + "\n" + memory.Content
+}
+
 func scanMemory(row rowScanner) (domain.Memory, error) {
 	var memory domain.Memory
 	err := row.Scan(
@@ -1290,6 +1311,7 @@ func scanMemory(row rowScanner) (domain.Memory, error) {
 		&memory.WorkspaceCode,
 		&memory.Type,
 		&memory.Title,
+		&memory.Summary,
 		&memory.Content,
 		&memory.Metadata,
 		&memory.Tags,
@@ -1330,6 +1352,7 @@ func decodeMemorySnapshot(data []byte) (domain.Memory, error) {
 		WorkspaceCode:     snapshot.WorkspaceCode,
 		Type:              snapshot.MemoryType,
 		Title:             snapshot.Title,
+		Summary:           snapshot.Summary,
 		Content:           snapshot.Content,
 		Metadata:          snapshot.Metadata,
 		Tags:              snapshot.Tags,

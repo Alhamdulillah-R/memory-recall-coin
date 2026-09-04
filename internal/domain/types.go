@@ -80,6 +80,7 @@ type Memory struct {
 	WorkspaceCode     string          `json:"workspace_code,omitempty"`
 	Type              string          `json:"type"`
 	Title             string          `json:"title"`
+	Summary           string          `json:"summary,omitempty"`
 	Content           string          `json:"content"`
 	Metadata          json.RawMessage `json:"metadata"`
 	Tags              []string        `json:"tags"`
@@ -224,6 +225,7 @@ type SearchResult struct {
 	WorkspaceCode     string          `json:"workspace_code,omitempty"`
 	Type              string          `json:"type"`
 	Title             string          `json:"title"`
+	Summary           string          `json:"summary,omitempty"`
 	Content           string          `json:"content,omitempty"`
 	Snippet           string          `json:"snippet,omitempty"`
 	Metadata          json.RawMessage `json:"metadata,omitempty"`
@@ -268,6 +270,7 @@ type MemoryListItem struct {
 	WorkspaceCode     string          `json:"workspace_code,omitempty"`
 	Type              string          `json:"type"`
 	Title             string          `json:"title"`
+	Summary           string          `json:"summary,omitempty"`
 	Content           string          `json:"content,omitempty"`
 	Snippet           string          `json:"snippet,omitempty"`
 	Metadata          json.RawMessage `json:"metadata,omitempty"`
@@ -311,6 +314,7 @@ func NewMemoryListResponse(response SearchResponse) MemoryListResponse {
 			WorkspaceCode:     result.WorkspaceCode,
 			Type:              result.Type,
 			Title:             result.Title,
+			Summary:           result.Summary,
 			Content:           result.Content,
 			Snippet:           result.Snippet,
 			Metadata:          result.Metadata,

@@ -17,6 +17,7 @@ type PutMemoryInput struct {
 	ScopeID           string                `json:"scope_id,omitempty" jsonschema:"scope identifier; inferred from caller identity when omitted"`
 	Type              string                `json:"type" jsonschema:"fact, experiment, hypothesis, decision, artifact, procedure, incident, or summary"`
 	Title             string                `json:"title"`
+	Summary           string                `json:"summary" jsonschema:"required 1-3 sentence abstract (max 500 chars) stating the conclusion and when it applies; returned by recall instead of the full content, so write it for a future agent deciding whether to read this memory"`
 	Content           string                `json:"content"`
 	Metadata          json.RawMessage       `json:"metadata,omitempty" jsonschema:"arbitrary JSON object"`
 	Tags              []string              `json:"tags,omitempty"`
@@ -44,6 +45,7 @@ type PatchMemoryInput struct {
 	ID                string                `json:"memory_id"`
 	ExpectedVersion   int64                 `json:"expected_version"`
 	Title             *string               `json:"title,omitempty"`
+	Summary           *string               `json:"summary,omitempty" jsonschema:"1-3 sentence abstract (max 500 chars); add one to older memories that lack it"`
 	Content           *string               `json:"content,omitempty" jsonschema:"replaces the whole content; mutually exclusive with append_content"`
 	AppendContent     *string               `json:"append_content,omitempty" jsonschema:"text appended to the current content after a blank line; mutually exclusive with content"`
 	Type              *string               `json:"type,omitempty"`

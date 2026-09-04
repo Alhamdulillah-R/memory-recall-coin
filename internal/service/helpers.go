@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
 
@@ -248,6 +249,17 @@ func isWindowsPath(value string) bool {
 
 	first := value[0]
 	return (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z')
+}
+
+func validateSummary(summary string) error {
+	if err := requireNonEmpty("summary", summary); err != nil {
+		return err
+	}
+	if utf8.RuneCountInString(summary) > 500 {
+		return NewError(CodeInvalidArgument, "summary must be at most 500 characters")
+	}
+
+	return nil
 }
 
 func validateConfidence(confidence float64) error {

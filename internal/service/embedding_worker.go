@@ -74,7 +74,7 @@ func (s *Store) ReconcileEmbeddingJobs(ctx context.Context) error {
 		)
 		SELECT
 			'memory', id, namespace,
-			encode(digest(title || E'\n' || content, 'sha256'), 'hex'),
+			encode(digest(title || E'\n' || coalesce(summary, '') || E'\n' || content, 'sha256'), 'hex'),
 			$1, 'pending', statement_timestamp()
 		FROM memories m
 		JOIN namespaces n ON n.code = m.namespace AND n.lifecycle_status = 'active'
@@ -306,7 +306,7 @@ func loadEmbeddingText(ctx context.Context, tx pgx.Tx, job embeddingJob) (string
 	switch job.TargetType {
 	case "memory":
 		err = tx.QueryRow(ctx, `
-            SELECT title || E'\n' || content
+            SELECT title || E'\n' || coalesce(summary, '') || E'\n' || content
             FROM memories
             WHERE id = $1 AND namespace = $2 AND lifecycle_status <> 'deleted'
         `, job.TargetID, job.Namespace).Scan(&text)
@@ -356,7 +356,7 @@ func (s *Store) completeEmbeddingJob(ctx context.Context, job embeddingJob, vect
 		command, err := tx.Exec(ctx, `
 			UPDATE memories SET embedding = $2, embedding_model = $3, embedded_at = statement_timestamp()
 			WHERE id = $1 AND namespace = $5 AND lifecycle_status <> 'deleted'
-			  AND encode(digest(title || E'\n' || content, 'sha256'), 'hex') = $4
+			  AND encode(digest(title || E'\n' || coalesce(summary, '') || E'\n' || content, 'sha256'), 'hex') = $4
 			  AND (embedding IS NULL OR embedding_model = $3)
 		`, job.TargetID, vector, job.Model, job.ContentHash, job.Namespace)
 		if err != nil {
