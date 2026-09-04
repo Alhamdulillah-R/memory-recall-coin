@@ -110,10 +110,26 @@ func (s *Store) PutMemory(ctx context.Context, input PutMemoryInput) (domain.Mem
 		return cached, nil
 	}
 
+	similar, err := findSimilarMemories(
+		ctx,
+		tx,
+		normalized.Namespace,
+		normalized.Title,
+		normalized.Content,
+		normalized.SupersedesID,
+	)
+	if err != nil {
+		return domain.Memory{}, err
+	}
+	if err := rejectNearDuplicates(similar, normalized.Title, normalized.AllowSimilar); err != nil {
+		return domain.Memory{}, err
+	}
+
 	memory, err := s.insertMemoryTx(ctx, tx, normalized, actor)
 	if err != nil {
 		return domain.Memory{}, err
 	}
+	memory.SimilarMemories = similar
 	if err := saveIdempotency(ctx, tx, normalized.Namespace, actor, "memory_put", normalized.IdempotencyKey, hash, memory); err != nil {
 		return domain.Memory{}, err
 	}
@@ -183,10 +199,11 @@ func normalizePutInput(input PutMemoryInput) (PutMemoryInput, error) {
 		}
 	}
 	input.Tags = normalizeTags(input.Tags)
-	input.ExpiresAt, err = validateTTL(input.TTLSeconds, input.ExpiresAt)
+	expiresAt, err := validateTTL(input.TTLSeconds, input.ExpiresAt.TimeValue())
 	if err != nil {
 		return PutMemoryInput{}, err
 	}
+	input.ExpiresAt = domain.TimestampOf(expiresAt)
 	input.TTLSeconds = nil
 
 	return input, nil
@@ -241,8 +258,8 @@ func (s *Store) insertMemoryTx(
 		nullableString(input.SourcePath),
 		nullableString(input.SourceHash),
 		nullableJSON(input.SourceRange),
-		input.ObservedAt,
-		input.ExpiresAt,
+		input.ObservedAt.TimeValue(),
+		input.ExpiresAt.TimeValue(),
 		nullableString(input.SupersedesID),
 		input.CreatedBy,
 	)
@@ -313,11 +330,21 @@ func (s *Store) PatchMemory(ctx context.Context, input PatchMemoryInput) (domain
 		add("title = $%d", strings.TrimSpace(*input.Title))
 		contentChanged = true
 	}
+	if input.Content != nil && input.AppendContent != nil {
+		return domain.Memory{}, NewError(CodeInvalidArgument, "content and append_content are mutually exclusive")
+	}
 	if input.Content != nil {
 		if err := requireNonEmpty("content", *input.Content); err != nil {
 			return domain.Memory{}, err
 		}
 		add("content = $%d", strings.TrimSpace(*input.Content))
+		contentChanged = true
+	}
+	if input.AppendContent != nil {
+		if err := requireNonEmpty("append_content", *input.AppendContent); err != nil {
+			return domain.Memory{}, err
+		}
+		add(`content = content || E'\n\n' || $%d`, strings.TrimSpace(*input.AppendContent))
 		contentChanged = true
 	}
 	if input.Type != nil {
@@ -372,7 +399,7 @@ func (s *Store) PatchMemory(ctx context.Context, input PatchMemoryInput) (domain
 		add("source_range = $%d::jsonb", nullableJSON(sourceRange))
 	}
 	if input.ObservedAt != nil {
-		add("observed_at = $%d", input.ObservedAt)
+		add("observed_at = $%d", input.ObservedAt.TimeValue())
 	}
 	if input.ClearExpiresAt {
 		if input.TTLSeconds != nil || input.ExpiresAt != nil {
@@ -380,7 +407,7 @@ func (s *Store) PatchMemory(ctx context.Context, input PatchMemoryInput) (domain
 		}
 		sets = append(sets, "expires_at = NULL")
 	} else if input.TTLSeconds != nil || input.ExpiresAt != nil {
-		expiresAt, err := validateTTL(input.TTLSeconds, input.ExpiresAt)
+		expiresAt, err := validateTTL(input.TTLSeconds, input.ExpiresAt.TimeValue())
 		if err != nil {
 			return domain.Memory{}, err
 		}
@@ -1063,7 +1090,7 @@ func (s *Store) TouchMemory(ctx context.Context, input TouchMemoryInput) (domain
 	}
 
 	expression := "expires_at = $5"
-	args := []any{input.Namespace, input.ID, input.ExpectedVersion, actor, input.ExpiresAt}
+	args := []any{input.Namespace, input.ID, input.ExpectedVersion, actor, input.ExpiresAt.TimeValue()}
 	if input.Pin {
 		expression = "expires_at = NULL"
 		args = args[:4]

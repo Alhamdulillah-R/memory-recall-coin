@@ -72,8 +72,12 @@ func namespaceAncestors(namespace string) []string {
 }
 
 func validateScope(scopeType, scopeID string, caller domain.CallerIdentity, namespace string) (string, string, error) {
+	// 沒給 scope_type 且查不到 workspace code 時用 global，不要讓第一次寫入就失敗
 	if scopeType == "" {
 		scopeType = domain.ScopeWorkspace
+		if strings.TrimSpace(caller.WorkspaceCode) == "" {
+			scopeType = domain.ScopeGlobal
+		}
 	}
 
 	switch scopeType {
@@ -102,7 +106,23 @@ func validateScope(scopeType, scopeID string, caller domain.CallerIdentity, name
 	}
 
 	if strings.TrimSpace(scopeID) == "" {
-		return "", "", NewError(CodeInvalidArgument, "scope_id cannot be inferred from the current caller identity")
+		serviceErr := NewError(
+			CodeInvalidArgument,
+			"scope_id cannot be inferred from the current caller identity for scope_type "+scopeType,
+		)
+		serviceErr.Details = map[string]any{
+			"scope_type": scopeType,
+			"allowed_scope_types": []string{
+				domain.ScopeInstallation,
+				domain.ScopeDevice,
+				domain.ScopeWorkspace,
+				domain.ScopeProject,
+				domain.ScopeGlobal,
+			},
+			"hint": "pass scope_type=global or an explicit scope_id; workspace scope needs MEMORY_WORKSPACE_CODE or a .memory-recall.json workspace_code",
+		}
+
+		return "", "", serviceErr
 	}
 
 	return scopeType, scopeID, nil

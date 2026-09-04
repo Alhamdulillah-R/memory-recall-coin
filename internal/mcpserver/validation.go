@@ -17,6 +17,8 @@ import (
 const (
 	callToolMethod           = "tools/call"
 	argumentValidationPrefix = `validating "arguments":`
+	// domain.Timestamp 解析失敗時的訊息開頭；這類錯誤發生在 schema 驗證之後的 JSON decode
+	timestampDecodePrefix = "timestamp "
 )
 
 var validationFieldAliases = map[string]string{
@@ -52,6 +54,9 @@ func validationErrorMiddleware(catalog toolSchemaCatalog) mcp.Middleware {
 			callResult, ok := result.(*mcp.CallToolResult)
 			if !ok || !callResult.IsError || callResult.StructuredContent != nil {
 				return result, nil
+			}
+			if decodeError, ok := timestampDecodeError(callResult); ok {
+				return structuredDecodeError(callResult, decodeError), nil
 			}
 			rawValidationError, ok := argumentValidationError(callResult)
 			if !ok {
@@ -110,6 +115,37 @@ func argumentValidationError(result *mcp.CallToolResult) (string, bool) {
 	}
 
 	return "", false
+}
+
+func timestampDecodeError(result *mcp.CallToolResult) (string, bool) {
+	if decodeErr := result.GetError(); decodeErr != nil && strings.HasPrefix(decodeErr.Error(), timestampDecodePrefix) {
+		return decodeErr.Error(), true
+	}
+	for _, content := range result.Content {
+		textContent, ok := content.(*mcp.TextContent)
+		if ok && strings.HasPrefix(textContent.Text, timestampDecodePrefix) {
+			return textContent.Text, true
+		}
+	}
+
+	return "", false
+}
+
+func structuredDecodeError(result *mcp.CallToolResult, message string) *mcp.CallToolResult {
+	payload := toolError{
+		Code:    service.CodeInvalidArgument,
+		Message: message,
+		Details: map[string]any{
+			"accepted_formats": []string{"2006-01-02T15:04:05Z07:00", "2006-01-02 15:04:05", "2006-01-02"},
+		},
+	}
+	enhancedResult := *result
+	enhancedResult.Content = []mcp.Content{
+		&mcp.TextContent{Text: service.CodeInvalidArgument + ": " + message},
+	}
+	enhancedResult.StructuredContent = payload
+
+	return &enhancedResult
 }
 
 func decodeToolArguments(raw json.RawMessage) (map[string]json.RawMessage, error) {

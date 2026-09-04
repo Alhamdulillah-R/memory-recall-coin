@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -129,6 +130,13 @@ func (s *Store) ListNamespaces(ctx context.Context, input NamespaceListInput) (d
 	}
 	if input.Limit > 200 {
 		return domain.NamespaceListResponse{}, NewError(CodeInvalidArgument, "limit must be between 1 and 200")
+	}
+	input.Format = strings.ToLower(strings.TrimSpace(input.Format))
+	if input.Format == "" {
+		input.Format = domain.NamespaceFormatFlat
+	}
+	if input.Format != domain.NamespaceFormatFlat && input.Format != domain.NamespaceFormatTree {
+		return domain.NamespaceListResponse{}, NewError(CodeInvalidArgument, "format must be flat or tree")
 	}
 	input.Cursor = strings.ToLower(strings.TrimSpace(input.Cursor))
 	if input.Cursor != "" {
@@ -272,13 +280,94 @@ func (s *Store) ListNamespaces(ctx context.Context, input NamespaceListInput) (d
 		namespaces = namespaces[:input.Limit]
 	}
 
-	return domain.NamespaceListResponse{
+	response := domain.NamespaceListResponse{
 		Parent:     input.Parent,
 		Depth:      input.Depth,
+		Format:     input.Format,
 		Namespaces: namespaces,
 		Count:      len(namespaces),
 		NextCursor: nextCursor,
-	}, nil
+	}
+	if input.Format == domain.NamespaceFormatTree {
+		response.Tree = renderNamespaceTree(input.Parent, namespaces)
+		response.Namespaces = nil
+	}
+
+	return response, nil
+}
+
+/**
+ * renderNamespaceTree 把排序過的 namespace 清單畫成可直接貼進文件的文字樹。
+ */
+func renderNamespaceTree(parent string, namespaces []domain.NamespaceSummary) string {
+	present := make(map[string]struct{}, len(namespaces))
+	for _, namespace := range namespaces {
+		present[namespace.Namespace] = struct{}{}
+	}
+
+	children := make(map[string][]domain.NamespaceSummary)
+	roots := make([]domain.NamespaceSummary, 0)
+	for _, namespace := range namespaces {
+		if _, exists := present[namespace.Parent]; exists {
+			children[namespace.Parent] = append(children[namespace.Parent], namespace)
+			continue
+		}
+		roots = append(roots, namespace)
+	}
+
+	var builder strings.Builder
+	if parent != "" {
+		builder.WriteString(parent + "\n")
+	}
+	for index, root := range roots {
+		// 沒有 parent 在清單裡的節點用完整路徑，避免 depth 截斷後看不出位置
+		label := root.Namespace
+		if parent == "" || root.Parent == parent {
+			label = root.Segment
+		}
+		writeNamespaceNode(&builder, root, label, "", index == len(roots)-1, parent != "", children)
+	}
+
+	return strings.TrimRight(builder.String(), "\n")
+}
+
+func writeNamespaceNode(
+	builder *strings.Builder,
+	node domain.NamespaceSummary,
+	label string,
+	prefix string,
+	last bool,
+	connected bool,
+	children map[string][]domain.NamespaceSummary,
+) {
+	line := label + namespaceTreeSuffix(node)
+	childPrefix := prefix
+	if connected {
+		branch := "├── "
+		childPrefix += "│   "
+		if last {
+			branch = "└── "
+			childPrefix = prefix + "    "
+		}
+		line = prefix + branch + line
+	}
+	builder.WriteString(line + "\n")
+
+	kids := children[node.Namespace]
+	for index, kid := range kids {
+		writeNamespaceNode(builder, kid, kid.Segment, childPrefix, index == len(kids)-1, true, children)
+	}
+}
+
+func namespaceTreeSuffix(node domain.NamespaceSummary) string {
+	suffix := "  [#" + strconv.FormatInt(node.Sequence, 10) +
+		" mem " + strconv.FormatInt(node.DirectMemoryCount, 10) + "/" + strconv.FormatInt(node.SubtreeMemoryCount, 10) +
+		" src " + strconv.FormatInt(node.DirectSourceCount, 10) + "/" + strconv.FormatInt(node.SubtreeSourceCount, 10) + "]"
+	if node.Status != "active" {
+		suffix += " (" + node.Status + ")"
+	}
+
+	return suffix
 }
 
 /**

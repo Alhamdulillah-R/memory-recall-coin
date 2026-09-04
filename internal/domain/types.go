@@ -29,6 +29,7 @@ const (
 )
 
 const (
+	SearchDetailIndex    = "index"
 	SearchDetailCompact  = "compact"
 	SearchDetailEvidence = "evidence"
 	SearchDetailFull     = "full"
@@ -37,6 +38,12 @@ const (
 const (
 	NamespaceMatchExact   = "exact"
 	NamespaceMatchSubtree = "subtree"
+	NamespaceMatchAll     = "all"
+)
+
+const (
+	NamespaceFormatFlat = "flat"
+	NamespaceFormatTree = "tree"
 )
 
 // CallerIdentity describes the logical device, installation and workspace issuing a request.
@@ -92,6 +99,19 @@ type Memory struct {
 	CreatedAt         time.Time       `json:"created_at"`
 	UpdatedAt         time.Time       `json:"updated_at"`
 	ObservedAt        *time.Time      `json:"observed_at,omitempty"`
+	// 只有 memory_put 會填：同 namespace 內標題或內容相近的既有 memory
+	SimilarMemories []SimilarMemory `json:"similar_memories,omitempty"`
+}
+
+// SimilarMemory 是寫入時在同 namespace 找到的近似重複候選。
+type SimilarMemory struct {
+	ID                string    `json:"id"`
+	Title             string    `json:"title"`
+	Version           int64     `json:"version"`
+	Status            string    `json:"status"`
+	TitleSimilarity   float64   `json:"title_similarity"`
+	ContentSimilarity float64   `json:"content_similarity"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // Revision stores the complete before and after snapshots for one mutation.
@@ -205,7 +225,7 @@ type SearchResult struct {
 	Type              string          `json:"type"`
 	Title             string          `json:"title"`
 	Content           string          `json:"content,omitempty"`
-	Snippet           string          `json:"snippet"`
+	Snippet           string          `json:"snippet,omitempty"`
 	Metadata          json.RawMessage `json:"metadata,omitempty"`
 	Tags              []string        `json:"tags"`
 	Status            string          `json:"status"`
@@ -233,6 +253,7 @@ type SearchResponse struct {
 	SemanticError   string         `json:"semantic_error,omitempty"`
 	DurationMS      int64          `json:"duration_ms"`
 	CandidateCounts map[string]int `json:"candidate_counts"`
+	NextCursor      string         `json:"next_cursor,omitempty"`
 }
 
 // MemoryListItem is one memory returned by filter-only browsing.
@@ -248,7 +269,7 @@ type MemoryListItem struct {
 	Type              string          `json:"type"`
 	Title             string          `json:"title"`
 	Content           string          `json:"content,omitempty"`
-	Snippet           string          `json:"snippet"`
+	Snippet           string          `json:"snippet,omitempty"`
 	Metadata          json.RawMessage `json:"metadata,omitempty"`
 	Tags              []string        `json:"tags"`
 	Status            string          `json:"status"`
@@ -272,6 +293,7 @@ type MemoryListResponse struct {
 	ScopeMode      string           `json:"scope_mode"`
 	DetailLevel    string           `json:"detail_level"`
 	DurationMS     int64            `json:"duration_ms"`
+	NextCursor     string           `json:"next_cursor,omitempty"`
 }
 
 // NewMemoryListResponse converts a search response into the dedicated list contract.
@@ -314,6 +336,7 @@ func NewMemoryListResponse(response SearchResponse) MemoryListResponse {
 		ScopeMode:      response.ScopeMode,
 		DetailLevel:    response.DetailLevel,
 		DurationMS:     response.DurationMS,
+		NextCursor:     response.NextCursor,
 	}
 }
 
@@ -346,7 +369,9 @@ type NamespaceCreateResult struct {
 type NamespaceListResponse struct {
 	Parent     string             `json:"parent"`
 	Depth      int                `json:"depth"`
-	Namespaces []NamespaceSummary `json:"namespaces"`
+	Format     string             `json:"format"`
+	Namespaces []NamespaceSummary `json:"namespaces,omitempty"`
+	Tree       string             `json:"tree,omitempty"`
 	Count      int                `json:"count"`
 	NextCursor string             `json:"next_cursor,omitempty"`
 }

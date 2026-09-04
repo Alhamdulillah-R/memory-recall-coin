@@ -602,13 +602,15 @@ func (c *Client) applyNamespace(namespace *string) {
 
 func (c *Client) applyMemoryDefaults(namespace, scopeType, scopeID *string, caller *domain.CallerIdentity) {
 	c.applyNamespace(namespace)
-	if strings.TrimSpace(*scopeType) == "" {
-		*scopeType = c.defaultScopeType
+	if strings.TrimSpace(*scopeType) != "" {
+		return
 	}
-	if *scopeType == domain.ScopeWorkspace && caller.WorkspaceCode == "" {
-		caller.WorkspaceCode = c.defaultWorkspaceCode
+
+	*scopeType = c.defaultScopeType
+	// 這台機器沒有 workspace code 時，workspace 預設會在 server 端失敗，改用 global
+	if *scopeType == domain.ScopeWorkspace && strings.TrimSpace(caller.WorkspaceCode) == "" && strings.TrimSpace(*scopeID) == "" {
+		*scopeType = domain.ScopeGlobal
 	}
-	_ = scopeID
 }
 
 func makeClientSnippet(content, query string, maxRunes int) string {

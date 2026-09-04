@@ -182,14 +182,14 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_recall` 
 
 | Tool | 作用 |
 |---|---|
-| `memory_put` | 创建带 scope、evidence、TTL 和 idempotency key 的 versioned memory |
-| `memory_patch` | 使用 `expected_version` 修改 mutable fields，并追加 revision |
+| `memory_put` | 创建带 scope、evidence、TTL 和 idempotency key 的 versioned memory；同 namespace 存在近似重复时拒绝写入，回传 compact receipt |
+| `memory_patch` | 使用 `expected_version` 修改 mutable fields，并追加 revision；`append_content` 追加内容而不必重送整段 |
 | `memory_get` | 按 ID 读取当前 memory 或指定历史 version |
-| `memory_search` | 执行 exact、substring、lexical、semantic、temporal、metadata 和 hybrid retrieval |
-| `memory_recall` | 对最多 8 个显式 namespace path/sequence 固定执行 hybrid memory + source_chunk recall，默认 subtree、all_devices 与 evidence response |
-| `memory_list` | 无需 query，按 scope、type、tag、metadata、lifecycle 和时间过滤浏览 memory |
+| `memory_search` | 执行 exact、substring、lexical、semantic、temporal、metadata 和 hybrid retrieval；省略 namespace selector 时搜索全库 |
+| `memory_recall` | 对最多 8 个 namespace path/sequence 固定执行 hybrid memory + source_chunk recall，默认 subtree、all_devices 与 evidence response；不传 selector 时全库 recall |
+| `memory_list` | 无需 query，按 scope、type、tag、metadata、lifecycle 和时间过滤浏览 memory；`cursor`/`next_cursor` 分页，`detail_level=index` 只回 id/title/tags/status |
 | `namespace_create` | 显式创建一个 namespace；创建 child 前 direct parent 必须已存在且 active，重复创建 active namespace 为幂等返回 |
-| `namespace_list` | 不传 parent selector 时列出所有顶级 roots；指定 `parent` 或 `parent_sequence` 时浏览其 namespace tree，并返回 direct/subtree memory 与 source counts |
+| `namespace_list` | 不传 parent selector 时列出所有顶级 roots；指定 `parent` 或 `parent_sequence` 时浏览其 namespace tree，并返回 direct/subtree memory 与 source counts；`format=tree` 回可直接贴用的文字树 |
 | `namespace_delete` | 默认 dry-run 预览 namespace 清理数量；确认后可删除目标或完整 subtree，并停止匹配的本机 watches |
 | `memory_delete` | soft delete memory，保留 revision history |
 | `memory_history` | 分页读取 append-only revisions |
@@ -210,7 +210,7 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_recall` 
 | `device_whoami` | 查询当前 installation、device、workspace 与 verified caller identity |
 | `memory_health` | 查询 PostgreSQL 与 embedding provider 状态及 server version |
 
-namespace 是小写 slash-separated path，例如 `memory-recall-coin/android/anti-bot`。每个 memory/source request 必须且只能使用一个 selector：`namespace` path，或 `namespace_sequence`。sequence 是数据库分配的持久非负整数，rename 后仍可稳定引用；`0` 是合法值，不能按 false/empty 处理。服务不再从 workspace 或 `MEMORY_DEFAULT_NAMESPACE` 自动补齐。`memory_search`、`memory_list` 和 `memory_source_status` 的 `namespace_match` 默认为 `exact`；只有显式传 `subtree` 才包含已解析 namespace 的全部 descendants。scope 仍负责 visibility，namespace hierarchy 不授予或扩展权限。
+namespace 是小写 slash-separated path，例如 `memory-recall-coin/android/anti-bot`。写入类 request 必须且只能使用一个 selector：`namespace` path，或 `namespace_sequence`。sequence 是数据库分配的持久非负整数，rename 后仍可稳定引用；`0` 是合法值，不能按 false/empty 处理。服务不再从 workspace 或 `MEMORY_DEFAULT_NAMESPACE` 自动补齐。`memory_search`、`memory_list` 和 `memory_recall` 可以整组省略 selector，此时检索全库并在 response 标记 `namespace_match=all`；带 selector 时 `namespace_match` 默认为 `exact`，只有显式传 `subtree` 才包含已解析 namespace 的全部 descendants，`all` 不能与 selector 同时出现。`memory_source_status` 仍要求 selector。scope 仍负责 visibility，namespace hierarchy 不授予或扩展权限。
 
 ```json
 {"query":"Frida detection","namespace":"memory-recall-coin/android","namespace_match":"subtree"}
@@ -219,6 +219,16 @@ namespace 是小写 slash-separated path，例如 `memory-recall-coin/android/an
 ```json
 {"query":"Frida detection","namespace_sequence":42,"namespace_match":"subtree"}
 ```
+
+```json
+{"query":"好像是 timer 的问题"}
+```
+
+`memory_put` 省略 `scope_type` 时：本机有 workspace code 用 `workspace`，否则用 `global`；显式要求 `workspace` 但推断不到 `scope_id` 时返回 `INVALID_ARGUMENT`，details 列出可用 `scope_type` 与设置方式。所有时间输入（`observed_at`、`expires_at`、`created_after` 等）接受 RFC3339、`YYYY-MM-DD` 或 `YYYY-MM-DD HH:MM:SS`（无时区按 UTC），格式错误返回带 `accepted_formats` 的 `INVALID_ARGUMENT`。
+
+`memory_put` 会在同 namespace 的 active memory 中做 `pg_trgm` 相似度检查：标题完全相同、标题相似度 ≥ 0.7 或内容相似度 ≥ 0.75 视为近似重复，默认返回 `FAILED_PRECONDITION`，details 的 `similar_memories` 列出候选 id/title/version；应改用 `memory_patch`/`memory_supersede`，或明确传 `allow_similar=true` 写入。相似度 ≥ 0.45 但未达门槛的候选会随 receipt 的 `similar_memories` 一起返回，仅作提示。`memory_supersede` 的 replacement 不做此检查。
+
+写入类 tool（`memory_put`、`memory_patch`、`memory_supersede`、`memory_restore`、`memory_refute`、`memory_touch`、`memory_pin`、`memory_delete`）通过 MCP 返回 compact receipt：`id`、`namespace`、`version`、`status`、`title`、`tags`、`content_length`、`updated_at`、`similar_memories`，不回 echo 整段 content；需要完整内容用 `memory_get`。中央 RPC 仍返回完整 memory。`memory_patch` 的 `append_content` 与 `content` 互斥，会在现有内容后加一个空行再追加文本。
 
 namespace 不再随 memory/source 写入隐式创建。新节点必须先调用 `namespace_create`；root 可直接创建，child 只能在 direct parent 已存在且 active 时创建，因此 `x/y/z` 必须按 `x` → `x/y` → `x/y/z` 顺序建立。`namespace_list` 不传 `parent`/`parent_sequence`（或传 `parent=""`）时从全库顶层开始，返回所有 top-level roots；否则必须且只能传一个非空 `parent` path 或 `parent_sequence`。默认 `depth=1`、`limit=100`，response 的 `parent` 始终是解析后的 canonical path，每项返回持久 `sequence`、parent、child count、direct/subtree counts 和 status。全库遍历按返回的 `next_cursor` 继续分页，不依赖 workspace default 或内容推断。
 
@@ -234,6 +244,19 @@ namespace 不再随 memory/source 写入隐式创建。新节点必须先调用 
 {"parent_sequence":42,"depth":2,"limit":100}
 ```
 
+`format=tree` 时 response 不带 `namespaces` 数组，改回一个 `tree` 文本块，每行是 `segment  [#sequence mem direct/subtree src direct/subtree]`，可直接贴进笔记：
+
+```json
+{"parent":"","depth":16,"limit":200,"format":"tree"}
+```
+
+```text
+rex-mirror-realm  [#3 mem 12/188 src 4/211]
+├── akamai  [#9 mem 20/41 src 0/0]
+│   └── abck  [#15 mem 21/21 src 0/0]
+└── incapsula  [#7 mem 30/95 src 0/2]
+```
+
 `namespace_delete` 必须且只能传 `namespace` 或 `namespace_sequence` 之一，`reason` 必填，且不会套用本机默认值。`dry_run` 默认为 `true`。确认 counts 后必须显式传 `dry_run=false`；`recursive=false` 只处理解析后的目标 namespace，存在 active descendants 时返回 `FAILED_PRECONDITION`。`recursive=true` 同时清理 subtree 的 memories/revisions/relations、sources/chunks/content、embeddings/jobs、ingestion roots/jobs、idempotency records 和持久化 watch registrations。通过 stdio MCP 调用时还会预览或停止匹配 namespace 的本机 watches，并单独返回 `affected_watch_ids`。
 
 实际删除是不可逆 hard purge，并保留 namespace tombstone；被删除的 path 及其 descendants 不能被重新创建。其他 stdio 进程中的 watch 在下一次 sync 收到 `FAILED_PRECONDITION` 后自行停止，tombstone 会阻止它们在此之前重新写回数据。
@@ -242,7 +265,17 @@ namespace 不再随 memory/source 写入隐式创建。新节点必须先调用 
 {"namespace":"memory-recall-coin/android","recursive":true,"dry_run":true,"reason":"preview retired project cleanup"}
 ```
 
-`memory_search` 和 `memory_list` 默认返回 `detail_level=compact`，保留 title、snippet、scope、status 与 tags。`memory_search` 额外返回可解释 score；`memory_list` 使用独立的 filter-only response，不携带空 query、candidate diagnostics 或全零 score。需要完整 content、metadata、evidence、device identity 和 source provenance 时显式传 `detail_level=full`。`memory_search.min_relevance` 按返回的 `score.relevance` 在 `0..1` 内过滤低相关结果。
+`memory_search` 和 `memory_list` 默认返回 `detail_level=compact`，保留 title、snippet、scope、status 与 tags。`detail_level=index` 进一步去掉 snippet，只留 id、namespace、type、title、tags、status、verification、confidence 与 version，适合先列清单再按 id 精读。`memory_search` 额外返回可解释 score；`memory_list` 使用独立的 filter-only response，不携带空 query、candidate diagnostics 或全零 score。需要完整 content、metadata、evidence、device identity 和 source provenance 时显式传 `detail_level=full`。`memory_search.min_relevance` 按返回的 `score.relevance` 在 `0..1` 内过滤低相关结果。
+
+`memory_list` 按 `updated_at` 倒序做 keyset 分页：默认 `limit=25`、上限 100，还有下一页时返回 opaque `next_cursor`，下一次调用原样传回 `cursor` 即可；cursor 不可手工构造，非法值返回 `INVALID_ARGUMENT`。
+
+```json
+{"detail_level":"index","limit":50}
+```
+
+```json
+{"detail_level":"index","limit":50,"cursor":"eyJ1IjoiMjAyNi0wOS0wNFQ..."}
+```
 
 `detail_level=evidence` 保留 evidence、`source_path` 与完整 `source_range`，同时去掉 content、metadata、device identity 与 source hash。高层 `memory_recall` 固定使用该返回粒度，并且不暴露 `retrieval_mode`、`kinds` 或 `candidate_limit`：
 
@@ -254,7 +287,7 @@ namespace 不再随 memory/source 写入隐式创建。新节点必须先调用 
 }
 ```
 
-`namespaces` 与 `namespace_sequences` 可以混用，总数最多 8 个。`memory_recall` 默认 `namespace_match=subtree`、`scope_mode=all_devices`，固定同时搜索 memory 与 source chunk，跨重叠 roots 去重后统一排序；每次 namespace lookup 的 resolved path、命中数、semantic 状态与耗时会放在 `attempts`。
+`namespaces` 与 `namespace_sequences` 可以混用，总数最多 8 个；两者都不传时做一次全库 recall，`attempts` 里对应项标记 `all_namespaces=true`，response 的 `namespace_match` 为 `all`。带 selector 时 `memory_recall` 默认 `namespace_match=subtree`、`scope_mode=all_devices`，固定同时搜索 memory 与 source chunk，跨重叠 roots 去重后统一排序；每次 namespace lookup 的 resolved path、命中数、semantic 状态与耗时会放在 `attempts`。
 
 Tool 业务错误同时设置 `isError=true` 与 `structuredContent={code,message,details}`；`content` 只保留简短可读文本，因此 `VERSION_CONFLICT` 等调用方可以直接读取 structured details 做自纠正。MCP schema validation error 也返回 field-level reason、近似字段 suggestion、required selector group、example 与 `schema_version`。
 

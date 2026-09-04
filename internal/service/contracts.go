@@ -13,7 +13,7 @@ type PutMemoryInput struct {
 	Namespace         string                `json:"namespace,omitempty" jsonschema:"slash-separated namespace path; mutually exclusive with namespace_sequence"`
 	NamespaceSequence *int64                `json:"namespace_sequence,omitempty" jsonschema:"stable namespace sequence; mutually exclusive with namespace"`
 	ID                string                `json:"id,omitempty" jsonschema:"optional stable memory ID; generated when omitted"`
-	ScopeType         string                `json:"scope_type" jsonschema:"installation, device, workspace, project, or global"`
+	ScopeType         string                `json:"scope_type" jsonschema:"installation, device, workspace, project, or global; defaults to workspace when a workspace code is known, otherwise global"`
 	ScopeID           string                `json:"scope_id,omitempty" jsonschema:"scope identifier; inferred from caller identity when omitted"`
 	Type              string                `json:"type" jsonschema:"fact, experiment, hypothesis, decision, artifact, procedure, incident, or summary"`
 	Title             string                `json:"title"`
@@ -28,9 +28,10 @@ type PutMemoryInput struct {
 	SourceHash        string                `json:"source_hash,omitempty"`
 	SourceRange       json.RawMessage       `json:"source_range,omitempty"`
 	SupersedesID      string                `json:"supersedes_id,omitempty"`
-	ObservedAt        *time.Time            `json:"observed_at,omitempty"`
+	ObservedAt        *domain.Timestamp     `json:"observed_at,omitempty" jsonschema:"RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS (UTC when no zone)"`
 	TTLSeconds        *int64                `json:"ttl_seconds,omitempty" jsonschema:"relative TTL in seconds; mutually exclusive with expires_at"`
-	ExpiresAt         *time.Time            `json:"expires_at,omitempty"`
+	ExpiresAt         *domain.Timestamp     `json:"expires_at,omitempty" jsonschema:"RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS (UTC when no zone)"`
+	AllowSimilar      bool                  `json:"allow_similar,omitempty" jsonschema:"write even when an active memory in the same namespace has a near-duplicate title or content; default false rejects with FAILED_PRECONDITION and lists the candidates"`
 	CreatedBy         string                `json:"created_by,omitempty"`
 	IdempotencyKey    string                `json:"idempotency_key,omitempty" jsonschema:"stable key for safe write retry"`
 	Caller            domain.CallerIdentity `json:"-"`
@@ -43,7 +44,8 @@ type PatchMemoryInput struct {
 	ID                string                `json:"memory_id"`
 	ExpectedVersion   int64                 `json:"expected_version"`
 	Title             *string               `json:"title,omitempty"`
-	Content           *string               `json:"content,omitempty"`
+	Content           *string               `json:"content,omitempty" jsonschema:"replaces the whole content; mutually exclusive with append_content"`
+	AppendContent     *string               `json:"append_content,omitempty" jsonschema:"text appended to the current content after a blank line; mutually exclusive with content"`
 	Type              *string               `json:"type,omitempty"`
 	MetadataMerge     json.RawMessage       `json:"metadata_merge,omitempty" jsonschema:"JSON object merged into current metadata; null values delete keys"`
 	ReplaceTags       *[]string             `json:"replace_tags,omitempty"`
@@ -54,9 +56,9 @@ type PatchMemoryInput struct {
 	SourcePath        *string               `json:"source_path,omitempty"`
 	SourceHash        *string               `json:"source_hash,omitempty"`
 	SourceRange       json.RawMessage       `json:"source_range,omitempty"`
-	ObservedAt        *time.Time            `json:"observed_at,omitempty"`
+	ObservedAt        *domain.Timestamp     `json:"observed_at,omitempty" jsonschema:"RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS (UTC when no zone)"`
 	TTLSeconds        *int64                `json:"ttl_seconds,omitempty"`
-	ExpiresAt         *time.Time            `json:"expires_at,omitempty"`
+	ExpiresAt         *domain.Timestamp     `json:"expires_at,omitempty" jsonschema:"RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS (UTC when no zone)"`
 	ClearExpiresAt    bool                  `json:"clear_expires_at,omitempty"`
 	Reason            string                `json:"reason,omitempty"`
 	UpdatedBy         string                `json:"updated_by,omitempty"`
@@ -79,58 +81,61 @@ type GetMemoryInput struct {
 
 // SearchMemoryInput selects retrieval channels and filters.
 type SearchMemoryInput struct {
-	Namespace         string                `json:"namespace,omitempty"`
-	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
-	NamespaceMatch    string                `json:"namespace_match,omitempty" jsonschema:"exact or subtree; default exact"`
-	Query             string                `json:"query"`
-	RetrievalMode     string                `json:"retrieval_mode,omitempty" jsonschema:"hybrid, exact, substring, lexical, or semantic; default hybrid"`
-	ScopeMode         string                `json:"scope_mode,omitempty" jsonschema:"prefer_local, local_only, project_only, or all_devices"`
-	DetailLevel       string                `json:"detail_level,omitempty" jsonschema:"compact, evidence, or full; default compact"`
-	MinRelevance      *float64              `json:"min_relevance,omitempty" jsonschema:"minimum returned score.relevance from 0 to 1"`
-	Kinds             []string              `json:"kinds,omitempty" jsonschema:"result kinds: memory or source_chunk"`
-	TagsAny           []string              `json:"tags_any,omitempty"`
-	TagsAll           []string              `json:"tags_all,omitempty"`
-	MetadataContains  map[string]any        `json:"metadata_contains,omitempty"`
-	Types             []string              `json:"types,omitempty"`
-	SourcePath        string                `json:"source_path,omitempty"`
-	CreatedAfter      *time.Time            `json:"created_after,omitempty"`
-	CreatedBefore     *time.Time            `json:"created_before,omitempty"`
-	UpdatedAfter      *time.Time            `json:"updated_after,omitempty"`
-	UpdatedBefore     *time.Time            `json:"updated_before,omitempty"`
-	ObservedAfter     *time.Time            `json:"observed_after,omitempty"`
-	ObservedBefore    *time.Time            `json:"observed_before,omitempty"`
-	IncludeExpired    bool                  `json:"include_expired,omitempty"`
-	IncludeRefuted    bool                  `json:"include_refuted,omitempty"`
-	IncludeSuperseded bool                  `json:"include_superseded,omitempty"`
-	IncludeDeleted    bool                  `json:"include_deleted,omitempty"`
-	Limit             int                   `json:"limit,omitempty" jsonschema:"maximum results from 1 to 100; default 10"`
-	CandidateLimit    int                   `json:"candidate_limit,omitempty" jsonschema:"per-channel candidate limit from 10 to 500; default 100"`
-	Caller            domain.CallerIdentity `json:"-"`
+	Namespace         string            `json:"namespace,omitempty" jsonschema:"namespace path; omit both selectors to search every namespace"`
+	NamespaceSequence *int64            `json:"namespace_sequence,omitempty"`
+	NamespaceMatch    string            `json:"namespace_match,omitempty" jsonschema:"exact, subtree, or all; default exact with a selector, all without one"`
+	Query             string            `json:"query"`
+	RetrievalMode     string            `json:"retrieval_mode,omitempty" jsonschema:"hybrid, exact, substring, lexical, or semantic; default hybrid"`
+	ScopeMode         string            `json:"scope_mode,omitempty" jsonschema:"prefer_local, local_only, project_only, or all_devices"`
+	DetailLevel       string            `json:"detail_level,omitempty" jsonschema:"index, compact, evidence, or full; default compact"`
+	MinRelevance      *float64          `json:"min_relevance,omitempty" jsonschema:"minimum returned score.relevance from 0 to 1"`
+	Kinds             []string          `json:"kinds,omitempty" jsonschema:"result kinds: memory or source_chunk"`
+	TagsAny           []string          `json:"tags_any,omitempty"`
+	TagsAll           []string          `json:"tags_all,omitempty"`
+	MetadataContains  map[string]any    `json:"metadata_contains,omitempty"`
+	Types             []string          `json:"types,omitempty"`
+	SourcePath        string            `json:"source_path,omitempty"`
+	CreatedAfter      *domain.Timestamp `json:"created_after,omitempty" jsonschema:"RFC3339 or YYYY-MM-DD"`
+	CreatedBefore     *domain.Timestamp `json:"created_before,omitempty" jsonschema:"RFC3339 or YYYY-MM-DD"`
+	UpdatedAfter      *domain.Timestamp `json:"updated_after,omitempty" jsonschema:"RFC3339 or YYYY-MM-DD"`
+	UpdatedBefore     *domain.Timestamp `json:"updated_before,omitempty" jsonschema:"RFC3339 or YYYY-MM-DD"`
+	ObservedAfter     *domain.Timestamp `json:"observed_after,omitempty" jsonschema:"RFC3339 or YYYY-MM-DD"`
+	ObservedBefore    *domain.Timestamp `json:"observed_before,omitempty" jsonschema:"RFC3339 or YYYY-MM-DD"`
+	IncludeExpired    bool              `json:"include_expired,omitempty"`
+	IncludeRefuted    bool              `json:"include_refuted,omitempty"`
+	IncludeSuperseded bool              `json:"include_superseded,omitempty"`
+	IncludeDeleted    bool              `json:"include_deleted,omitempty"`
+	Limit             int               `json:"limit,omitempty" jsonschema:"maximum results from 1 to 100; default 10"`
+	CandidateLimit    int               `json:"candidate_limit,omitempty" jsonschema:"per-channel candidate limit from 10 to 500; default 100"`
+	// 只有 list retrieval 用的 keyset cursor，由 ListMemoryInput 帶入
+	Cursor string                `json:"-"`
+	Caller domain.CallerIdentity `json:"-"`
 }
 
 // ListMemoryInput browses memories using filters without requiring a search query.
 type ListMemoryInput struct {
-	Namespace         string                `json:"namespace,omitempty"`
+	Namespace         string                `json:"namespace,omitempty" jsonschema:"namespace path; omit both selectors to list every namespace"`
 	NamespaceSequence *int64                `json:"namespace_sequence,omitempty"`
-	NamespaceMatch    string                `json:"namespace_match,omitempty" jsonschema:"exact or subtree; default exact"`
+	NamespaceMatch    string                `json:"namespace_match,omitempty" jsonschema:"exact, subtree, or all; default exact with a selector, all without one"`
 	ScopeMode         string                `json:"scope_mode,omitempty" jsonschema:"prefer_local, local_only, project_only, or all_devices"`
-	DetailLevel       string                `json:"detail_level,omitempty" jsonschema:"compact, evidence, or full; default compact"`
+	DetailLevel       string                `json:"detail_level,omitempty" jsonschema:"index, compact, evidence, or full; default compact; index returns id, title, tags and status only"`
 	TagsAny           []string              `json:"tags_any,omitempty"`
 	TagsAll           []string              `json:"tags_all,omitempty"`
 	MetadataContains  map[string]any        `json:"metadata_contains,omitempty"`
 	Types             []string              `json:"types,omitempty"`
 	SourcePath        string                `json:"source_path,omitempty"`
-	CreatedAfter      *time.Time            `json:"created_after,omitempty"`
-	CreatedBefore     *time.Time            `json:"created_before,omitempty"`
-	UpdatedAfter      *time.Time            `json:"updated_after,omitempty"`
-	UpdatedBefore     *time.Time            `json:"updated_before,omitempty"`
-	ObservedAfter     *time.Time            `json:"observed_after,omitempty"`
-	ObservedBefore    *time.Time            `json:"observed_before,omitempty"`
+	CreatedAfter      *domain.Timestamp     `json:"created_after,omitempty" jsonschema:"RFC3339 or YYYY-MM-DD"`
+	CreatedBefore     *domain.Timestamp     `json:"created_before,omitempty" jsonschema:"RFC3339 or YYYY-MM-DD"`
+	UpdatedAfter      *domain.Timestamp     `json:"updated_after,omitempty" jsonschema:"RFC3339 or YYYY-MM-DD"`
+	UpdatedBefore     *domain.Timestamp     `json:"updated_before,omitempty" jsonschema:"RFC3339 or YYYY-MM-DD"`
+	ObservedAfter     *domain.Timestamp     `json:"observed_after,omitempty" jsonschema:"RFC3339 or YYYY-MM-DD"`
+	ObservedBefore    *domain.Timestamp     `json:"observed_before,omitempty" jsonschema:"RFC3339 or YYYY-MM-DD"`
 	IncludeExpired    bool                  `json:"include_expired,omitempty"`
 	IncludeRefuted    bool                  `json:"include_refuted,omitempty"`
 	IncludeSuperseded bool                  `json:"include_superseded,omitempty"`
 	IncludeDeleted    bool                  `json:"include_deleted,omitempty"`
-	Limit             int                   `json:"limit,omitempty" jsonschema:"maximum results from 1 to 100; default 10"`
+	Limit             int                   `json:"limit,omitempty" jsonschema:"page size from 1 to 100; default 25"`
+	Cursor            string                `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page; results are ordered by updated_at desc"`
 	Caller            domain.CallerIdentity `json:"-"`
 }
 
@@ -161,6 +166,7 @@ func (input ListMemoryInput) SearchInput() SearchMemoryInput {
 		IncludeDeleted:    input.IncludeDeleted,
 		Limit:             input.Limit,
 		CandidateLimit:    input.Limit,
+		Cursor:            input.Cursor,
 		Caller:            input.Caller,
 	}
 }
@@ -170,6 +176,7 @@ type NamespaceListInput struct {
 	Parent         string                `json:"parent,omitempty" jsonschema:"parent namespace path; empty lists every top-level namespace"`
 	ParentSequence *int64                `json:"parent_sequence,omitempty" jsonschema:"stable parent namespace sequence; mutually exclusive with parent"`
 	Depth          int                   `json:"depth,omitempty" jsonschema:"maximum descendant depth from 1 to 16; default 1"`
+	Format         string                `json:"format,omitempty" jsonschema:"flat or tree; default flat; tree returns one indented text block instead of the namespaces array"`
 	IncludeDeleted bool                  `json:"include_deleted,omitempty"`
 	Limit          int                   `json:"limit,omitempty" jsonschema:"maximum namespaces from 1 to 200; default 100"`
 	Cursor         string                `json:"cursor,omitempty"`
@@ -266,7 +273,7 @@ type TouchMemoryInput struct {
 	ID                string                `json:"memory_id"`
 	ExpectedVersion   int64                 `json:"expected_version"`
 	ExtendBySeconds   *int64                `json:"extend_by_seconds,omitempty"`
-	ExpiresAt         *time.Time            `json:"expires_at,omitempty"`
+	ExpiresAt         *domain.Timestamp     `json:"expires_at,omitempty" jsonschema:"RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS (UTC when no zone)"`
 	Pin               bool                  `json:"pin,omitempty" jsonschema:"clear expiration when true"`
 	Reason            string                `json:"reason,omitempty"`
 	Actor             string                `json:"actor,omitempty"`

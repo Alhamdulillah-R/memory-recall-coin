@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"time"
 
@@ -36,19 +37,19 @@ type Handlers struct {
 
 // IngestPathInput describes a local path scan without exposing internal file payloads.
 type IngestPathInput struct {
-	Path              string     `json:"path" jsonschema:"local absolute file or directory path"`
-	Namespace         string     `json:"namespace,omitempty" jsonschema:"slash-separated namespace path; mutually exclusive with namespace_sequence"`
-	NamespaceSequence *int64     `json:"namespace_sequence,omitempty" jsonschema:"stable namespace sequence; mutually exclusive with namespace"`
-	ScopeType         string     `json:"scope_type,omitempty" jsonschema:"installation, device, workspace, project, or global"`
-	ScopeID           string     `json:"scope_id,omitempty"`
-	TTLSeconds        *int64     `json:"ttl_seconds,omitempty"`
-	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
-	Recursive         *bool      `json:"recursive,omitempty"`
-	Include           []string   `json:"include,omitempty" jsonschema:"doublestar include globs relative to path"`
-	Exclude           []string   `json:"exclude,omitempty" jsonschema:"doublestar exclude globs relative to path"`
-	WatchMode         string     `json:"watch_mode,omitempty" jsonschema:"once, sync, or watch"`
-	Parser            string     `json:"parser,omitempty" jsonschema:"auto, text, markdown, or caller-defined parser label"`
-	PruneMissing      *bool      `json:"prune_missing,omitempty" jsonschema:"remove server indexes absent from a complete manifest; defaults true for sync/watch"`
+	Path              string            `json:"path" jsonschema:"local absolute file or directory path"`
+	Namespace         string            `json:"namespace,omitempty" jsonschema:"slash-separated namespace path; mutually exclusive with namespace_sequence"`
+	NamespaceSequence *int64            `json:"namespace_sequence,omitempty" jsonschema:"stable namespace sequence; mutually exclusive with namespace"`
+	ScopeType         string            `json:"scope_type,omitempty" jsonschema:"installation, device, workspace, project, or global"`
+	ScopeID           string            `json:"scope_id,omitempty"`
+	TTLSeconds        *int64            `json:"ttl_seconds,omitempty"`
+	ExpiresAt         *domain.Timestamp `json:"expires_at,omitempty" jsonschema:"RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS (UTC when no zone)"`
+	Recursive         *bool             `json:"recursive,omitempty"`
+	Include           []string          `json:"include,omitempty" jsonschema:"doublestar include globs relative to path"`
+	Exclude           []string          `json:"exclude,omitempty" jsonschema:"doublestar exclude globs relative to path"`
+	WatchMode         string            `json:"watch_mode,omitempty" jsonschema:"once, sync, or watch"`
+	Parser            string            `json:"parser,omitempty" jsonschema:"auto, text, markdown, or caller-defined parser label"`
+	PruneMissing      *bool             `json:"prune_missing,omitempty" jsonschema:"remove server indexes absent from a complete manifest; defaults true for sync/watch"`
 }
 
 // PinMemoryInput clears expiration using optimistic concurrency.
@@ -85,6 +86,54 @@ type HistoryResult struct {
 	Revisions []domain.Revision `json:"revisions"`
 }
 
+// MemoryReceipt 是寫入類 tool 的精簡回覆，不回 echo 整段 content 以節省 context。
+type MemoryReceipt struct {
+	ID                string                 `json:"id"`
+	Namespace         string                 `json:"namespace"`
+	Version           int64                  `json:"version"`
+	Status            string                 `json:"status"`
+	Type              string                 `json:"type"`
+	Title             string                 `json:"title"`
+	ScopeType         string                 `json:"scope_type"`
+	ScopeID           string                 `json:"scope_id,omitempty"`
+	Tags              []string               `json:"tags"`
+	ContentLength     int                    `json:"content_length"`
+	ExpiresAt         *time.Time             `json:"expires_at,omitempty"`
+	UpdatedAt         time.Time              `json:"updated_at"`
+	SupersedesID      string                 `json:"supersedes_id,omitempty"`
+	SimilarMemories   []domain.SimilarMemory `json:"similar_memories,omitempty"`
+	VerificationState string                 `json:"verification_state"`
+}
+
+func newMemoryReceipt(memory domain.Memory) MemoryReceipt {
+	return MemoryReceipt{
+		ID:                memory.ID,
+		Namespace:         memory.Namespace,
+		Version:           memory.Version,
+		Status:            memory.Status,
+		Type:              memory.Type,
+		Title:             memory.Title,
+		ScopeType:         memory.ScopeType,
+		ScopeID:           memory.ScopeID,
+		Tags:              memory.Tags,
+		ContentLength:     len([]rune(memory.Content)),
+		ExpiresAt:         memory.ExpiresAt,
+		UpdatedAt:         memory.UpdatedAt,
+		SupersedesID:      memory.SupersedesID,
+		SimilarMemories:   memory.SimilarMemories,
+		VerificationState: memory.VerificationState,
+	}
+}
+
+// schemaOptions 讓寬鬆時間型別在 schema 裡是字串，而不是被推成空 object。
+func schemaOptions() *jsonschema.ForOptions {
+	return &jsonschema.ForOptions{
+		TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+			reflect.TypeFor[domain.Timestamp](): {Type: "string"},
+		},
+	}
+}
+
 // WatchListResult wraps local watches because MCP tool output schemas require an object root.
 type WatchListResult struct {
 	Watches []ingest.WatchInfo `json:"watches"`
@@ -113,7 +162,7 @@ func New(backend service.Backend, options Options) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "memory-recall-coin", Version: options.Version},
 		&mcp.ServerOptions{
-			Instructions: `Primary workflow: memory_put records durable knowledge, memory_recall performs opinionated recall across explicit namespace roots, memory_search provides low-level retrieval controls, memory_list browses by filters without a query, and memory_get reads one exact ID or version. Every memory and source operation requires an existing explicit namespace path or stable namespace sequence; writes never create namespaces implicitly. Use namespace_create to create one node at a time; a child requires its direct parent to exist. Workspace inference is never used. namespace_match defaults to exact for low-level tools, while memory_recall defaults to subtree and all_devices. Use namespace_list without parent selectors to discover every top-level root, or with exactly one of parent and parent_sequence to browse descendants. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths.`,
+			Instructions: `Primary workflow: memory_put records durable knowledge, memory_recall performs opinionated recall across namespace roots (omit selectors to recall from every namespace), memory_search provides low-level retrieval controls, memory_list browses by filters with cursor pagination, and memory_get reads one exact ID or version. Reads accept an optional namespace path or stable namespace sequence; without one they search every namespace (namespace_match=all). Writes require an existing explicit namespace and never create namespaces implicitly. Use namespace_create to create one node at a time; a child requires its direct parent to exist. namespace_match defaults to exact for low-level tools when a selector is given, while memory_recall defaults to subtree and all_devices. Use namespace_list without parent selectors to discover every top-level root (format=tree prints a paste-ready tree), or with exactly one of parent and parent_sequence to browse descendants. memory_put rejects near-duplicate titles or content in the same namespace with FAILED_PRECONDITION and lists the candidates; patch or supersede them, or pass allow_similar=true. Write tools return a compact receipt (id, version, status, similar_memories); use memory_get for full content. memory_patch append_content appends text without resending the whole content. Timestamps accept RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS. detail_level=index returns only ids, titles, tags and status. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths.`,
 			Logger:       logger,
 			PageSize:     100,
 		},
@@ -126,14 +175,14 @@ func New(backend service.Backend, options Options) *mcp.Server {
 
 func addTools(server *mcp.Server, handlers *Handlers) {
 	catalog := make(toolSchemaCatalog, 27)
-	addTypedTool(server, catalog, tool("memory_put", "Create a versioned memory with evidence, scope and optional TTL.", false, false, false), handlers.putMemory)
-	addTypedTool(server, catalog, tool("memory_patch", "Patch mutable memory fields using optimistic concurrency.", false, true, false), handlers.patchMemory)
+	addTypedTool(server, catalog, tool("memory_put", "Create a versioned memory with evidence, scope and optional TTL; near-duplicates in the namespace are rejected unless allow_similar=true. Returns a compact receipt.", false, false, false), handlers.putMemory)
+	addTypedTool(server, catalog, tool("memory_patch", "Patch mutable memory fields using optimistic concurrency; append_content appends text without resending the whole content. Returns a compact receipt.", false, true, false), handlers.patchMemory)
 	addTypedTool(server, catalog, tool("memory_get", "Read a current memory or historical version by ID.", true, true, false), handlers.getMemory)
-	addTypedTool(server, catalog, tool("memory_search", "Recall relevant memories and source chunks by exact, substring, lexical, semantic or hybrid retrieval.", true, true, false), handlers.searchMemory)
-	addTypedTool(server, catalog, tool("memory_recall", "Recall memories and source chunks across explicit namespace paths or sequences with fixed hybrid retrieval, subtree and all_devices defaults.", true, true, false), handlers.memoryRecall)
-	addTypedTool(server, catalog, tool("memory_list", "Browse memories by scope, type, tags, metadata, lifecycle and time filters without a query.", true, true, false), handlers.listMemory)
+	addTypedTool(server, catalog, tool("memory_search", "Recall relevant memories and source chunks by exact, substring, lexical, semantic or hybrid retrieval; omit the namespace selector to search every namespace.", true, true, false), handlers.searchMemory)
+	addTypedTool(server, catalog, tool("memory_recall", "Recall memories and source chunks across namespace paths or sequences with fixed hybrid retrieval, subtree and all_devices defaults; omit selectors to recall from every namespace.", true, true, false), handlers.memoryRecall)
+	addTypedTool(server, catalog, tool("memory_list", "Browse memories by scope, type, tags, metadata, lifecycle and time filters without a query; paginate with cursor/next_cursor and use detail_level=index for a compact id/title listing.", true, true, false), handlers.listMemory)
 	addTypedTool(server, catalog, tool("namespace_create", "Explicitly create one namespace; its direct parent must already exist.", false, true, false), handlers.namespaceCreate)
-	addTypedTool(server, catalog, tool("namespace_list", "List every top-level namespace without a parent selector, or browse descendants below exactly one parent path or parent_sequence.", true, true, false), handlers.namespaceList)
+	addTypedTool(server, catalog, tool("namespace_list", "List every top-level namespace without a parent selector, or browse descendants below exactly one parent path or parent_sequence; format=tree returns a paste-ready text tree.", true, true, false), handlers.namespaceList)
 	addTypedTool(server, catalog, tool("namespace_delete", "Preview or delete one namespace; recursive deletion also removes its complete subtree and matching local watches.", false, true, true), handlers.deleteNamespace)
 	addTypedTool(server, catalog, tool("memory_delete", "Soft-delete a memory while preserving immutable revision history.", false, true, true), handlers.deleteMemory)
 	addTypedTool(server, catalog, tool("memory_history", "List append-only revisions for a memory.", true, true, false), handlers.history)
@@ -162,11 +211,11 @@ func addTypedTool[Input, Output any](
 	definition *mcp.Tool,
 	handler mcp.ToolHandlerFor[Input, Output],
 ) {
-	inputSchema, err := jsonschema.For[Input](nil)
+	inputSchema, err := jsonschema.For[Input](schemaOptions())
 	if err != nil {
 		panic(fmt.Errorf("build input schema for %s: %w", definition.Name, err))
 	}
-	outputSchema, err := jsonschema.For[Output](nil)
+	outputSchema, err := jsonschema.For[Output](schemaOptions())
 	if err != nil {
 		panic(fmt.Errorf("build output schema for %s: %w", definition.Name, err))
 	}
@@ -358,7 +407,10 @@ func requireInputProperties(schema *jsonschema.Schema, names ...string) {
 
 func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
 	setNamespacePropertyConstraints(schema, "namespace")
-	setOptionalNamespacePropertyConstraints(schema, "parent", "cursor")
+	// namespace_list 的 cursor 是 namespace path；memory_list 的 cursor 是 opaque token
+	if toolName == "namespace_list" {
+		setOptionalNamespacePropertyConstraints(schema, "parent", "cursor")
+	}
 	setNumericPropertyMinimum(schema, "namespace_sequence", 0)
 	setNumericPropertyMinimum(schema, "parent_sequence", 0)
 	setPropertyEnum(schema, "scope_type", []string{
@@ -385,10 +437,22 @@ func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
 		domain.NamespaceMatchExact,
 		domain.NamespaceMatchSubtree,
 	})
+	if toolName == "memory_search" || toolName == "memory_list" {
+		setPropertyEnum(schema, "namespace_match", []string{
+			domain.NamespaceMatchExact,
+			domain.NamespaceMatchSubtree,
+			domain.NamespaceMatchAll,
+		})
+	}
 	setPropertyEnum(schema, "detail_level", []string{
+		domain.SearchDetailIndex,
 		domain.SearchDetailCompact,
 		domain.SearchDetailEvidence,
 		domain.SearchDetailFull,
+	})
+	setPropertyEnum(schema, "format", []string{
+		domain.NamespaceFormatFlat,
+		domain.NamespaceFormatTree,
 	})
 	setPropertyEnum(schema, "verification_state", []string{
 		"unverified",
@@ -482,6 +546,11 @@ func applyNamespaceSelectorConstraint(toolName string, schema *jsonschema.Schema
 	}
 
 	removeRequiredProperties(schema, "namespace", "namespace_sequence")
+	// 讀取類 tool 的 selector 可以整組省略＝全庫
+	if toolName == "memory_search" || toolName == "memory_list" {
+		forbidPropertyPair(schema, "namespace", "namespace_sequence")
+		return
+	}
 	schema.OneOf = append(schema.OneOf,
 		requireOnlyProperty("namespace", "namespace_sequence"),
 		requireOnlyProperty("namespace_sequence", "namespace"),
@@ -747,14 +816,14 @@ func boolPointer(value bool) *bool {
 	return &boolFalse
 }
 
-func (h *Handlers) putMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.PutMemoryInput) (*mcp.CallToolResult, domain.Memory, error) {
+func (h *Handlers) putMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.PutMemoryInput) (*mcp.CallToolResult, MemoryReceipt, error) {
 	result, err := h.backend.PutMemory(ctx, input)
-	return nil, result, err
+	return nil, newMemoryReceipt(result), err
 }
 
-func (h *Handlers) patchMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.PatchMemoryInput) (*mcp.CallToolResult, domain.Memory, error) {
+func (h *Handlers) patchMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.PatchMemoryInput) (*mcp.CallToolResult, MemoryReceipt, error) {
 	result, err := h.backend.PatchMemory(ctx, input)
-	return nil, result, err
+	return nil, newMemoryReceipt(result), err
 }
 
 func (h *Handlers) getMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.GetMemoryInput) (*mcp.CallToolResult, domain.Memory, error) {
@@ -874,9 +943,9 @@ func attachAffectedWatches(result *domain.NamespaceDeleteResult, watchIDs []stri
 	result.AffectedWatchIDs = watchIDs
 }
 
-func (h *Handlers) deleteMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.DeleteMemoryInput) (*mcp.CallToolResult, domain.Memory, error) {
+func (h *Handlers) deleteMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.DeleteMemoryInput) (*mcp.CallToolResult, MemoryReceipt, error) {
 	result, err := h.backend.DeleteMemory(ctx, input)
-	return nil, result, err
+	return nil, newMemoryReceipt(result), err
 }
 
 func (h *Handlers) history(ctx context.Context, _ *mcp.CallToolRequest, input service.HistoryInput) (*mcp.CallToolResult, HistoryResult, error) {
@@ -884,27 +953,27 @@ func (h *Handlers) history(ctx context.Context, _ *mcp.CallToolRequest, input se
 	return nil, HistoryResult{Revisions: result}, err
 }
 
-func (h *Handlers) restoreMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.RestoreMemoryInput) (*mcp.CallToolResult, domain.Memory, error) {
+func (h *Handlers) restoreMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.RestoreMemoryInput) (*mcp.CallToolResult, MemoryReceipt, error) {
 	result, err := h.backend.RestoreMemory(ctx, input)
-	return nil, result, err
+	return nil, newMemoryReceipt(result), err
 }
 
-func (h *Handlers) supersedeMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.SupersedeMemoryInput) (*mcp.CallToolResult, domain.Memory, error) {
+func (h *Handlers) supersedeMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.SupersedeMemoryInput) (*mcp.CallToolResult, MemoryReceipt, error) {
 	result, err := h.backend.SupersedeMemory(ctx, input)
-	return nil, result, err
+	return nil, newMemoryReceipt(result), err
 }
 
-func (h *Handlers) refuteMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.RefuteMemoryInput) (*mcp.CallToolResult, domain.Memory, error) {
+func (h *Handlers) refuteMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.RefuteMemoryInput) (*mcp.CallToolResult, MemoryReceipt, error) {
 	result, err := h.backend.RefuteMemory(ctx, input)
-	return nil, result, err
+	return nil, newMemoryReceipt(result), err
 }
 
-func (h *Handlers) touchMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.TouchMemoryInput) (*mcp.CallToolResult, domain.Memory, error) {
+func (h *Handlers) touchMemory(ctx context.Context, _ *mcp.CallToolRequest, input service.TouchMemoryInput) (*mcp.CallToolResult, MemoryReceipt, error) {
 	result, err := h.backend.TouchMemory(ctx, input)
-	return nil, result, err
+	return nil, newMemoryReceipt(result), err
 }
 
-func (h *Handlers) pinMemory(ctx context.Context, _ *mcp.CallToolRequest, input PinMemoryInput) (*mcp.CallToolResult, domain.Memory, error) {
+func (h *Handlers) pinMemory(ctx context.Context, _ *mcp.CallToolRequest, input PinMemoryInput) (*mcp.CallToolResult, MemoryReceipt, error) {
 	result, err := h.backend.TouchMemory(ctx, service.TouchMemoryInput{
 		Namespace:         input.Namespace,
 		NamespaceSequence: input.NamespaceSequence,
@@ -915,7 +984,7 @@ func (h *Handlers) pinMemory(ctx context.Context, _ *mcp.CallToolRequest, input 
 		Actor:             input.Actor,
 		IdempotencyKey:    input.IdempotencyKey,
 	})
-	return nil, result, err
+	return nil, newMemoryReceipt(result), err
 }
 
 func (h *Handlers) ingestPath(ctx context.Context, _ *mcp.CallToolRequest, input IngestPathInput) (*mcp.CallToolResult, domain.IngestionSummary, error) {
@@ -952,7 +1021,7 @@ func (h *Handlers) ingestPath(ctx context.Context, _ *mcp.CallToolRequest, input
 		WatchMode:    watchMode,
 		Parser:       input.Parser,
 		TTLSeconds:   input.TTLSeconds,
-		ExpiresAt:    input.ExpiresAt,
+		ExpiresAt:    input.ExpiresAt.TimeValue(),
 		PruneMissing: pruneMissing,
 	}
 	if watchMode == "watch" {

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -24,11 +25,42 @@ const (
 	localityWeight     = 0.02
 	relevanceWeight    = 1 - qualityWeight - localityWeight
 	maxEvidenceQuality = 3.0
+	searchDefaultLimit = 10
+	listDefaultLimit   = 25
 )
 
 type searchCandidate struct {
 	Result    domain.SearchResult
 	UpdatedAt time.Time
+}
+
+// listCursor 是 memory_list 的 keyset 位置：上一頁最後一筆的 updated_at 與 id。
+type listCursor struct {
+	UpdatedAt time.Time `json:"u"`
+	ID        string    `json:"i"`
+}
+
+func encodeListCursor(candidate searchCandidate) string {
+	data, err := json.Marshal(listCursor{UpdatedAt: candidate.UpdatedAt, ID: candidate.Result.ID})
+	if err != nil {
+		return ""
+	}
+
+	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+func decodeListCursor(value string) (listCursor, error) {
+	invalid := NewError(CodeInvalidArgument, "cursor is invalid; use next_cursor from the previous memory_list response")
+	data, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(value))
+	if err != nil {
+		return listCursor{}, invalid
+	}
+	var cursor listCursor
+	if err := json.Unmarshal(data, &cursor); err != nil || cursor.ID == "" || cursor.UpdatedAt.IsZero() {
+		return listCursor{}, invalid
+	}
+
+	return cursor, nil
 }
 
 type channelResult struct {
@@ -43,7 +75,7 @@ type channelResult struct {
  */
 func (s *Store) SearchMemory(ctx context.Context, input SearchMemoryInput) (domain.SearchResponse, error) {
 	startedAt := time.Now()
-	namespace, err := s.resolveNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
+	namespace, err := s.resolveOptionalNamespaceSelector(ctx, input.Namespace, input.NamespaceSequence)
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}
@@ -144,19 +176,12 @@ func (s *Store) ListMemory(ctx context.Context, input ListMemoryInput) (domain.M
 }
 
 func normalizeSearchInput(input SearchMemoryInput) (SearchMemoryInput, error) {
-	namespace, err := normalizeNamespace(input.Namespace)
+	normalizedNamespace, namespaceMatch, err := normalizeSearchNamespace(input.Namespace, input.NamespaceMatch)
 	if err != nil {
 		return SearchMemoryInput{}, err
 	}
-	input.Namespace = namespace
-	if input.NamespaceMatch == "" {
-		input.NamespaceMatch = domain.NamespaceMatchExact
-	}
-	switch input.NamespaceMatch {
-	case domain.NamespaceMatchExact, domain.NamespaceMatchSubtree:
-	default:
-		return SearchMemoryInput{}, NewError(CodeInvalidArgument, "namespace_match must be exact or subtree")
-	}
+	input.Namespace = normalizedNamespace
+	input.NamespaceMatch = namespaceMatch
 	input.Query = strings.TrimSpace(input.Query)
 	if input.Query == "" && input.RetrievalMode != "list" {
 		return SearchMemoryInput{}, NewError(CodeInvalidArgument, "query is required")
@@ -173,7 +198,7 @@ func normalizeSearchInput(input SearchMemoryInput) (SearchMemoryInput, error) {
 		input.DetailLevel = domain.SearchDetailFull
 	}
 	switch input.DetailLevel {
-	case domain.SearchDetailCompact, domain.SearchDetailEvidence, domain.SearchDetailFull:
+	case domain.SearchDetailIndex, domain.SearchDetailCompact, domain.SearchDetailEvidence, domain.SearchDetailFull:
 	default:
 		return SearchMemoryInput{}, NewError(CodeInvalidArgument, "unsupported detail_level")
 	}
@@ -197,10 +222,16 @@ func normalizeSearchInput(input SearchMemoryInput) (SearchMemoryInput, error) {
 		return SearchMemoryInput{}, NewError(CodeInvalidArgument, "unsupported scope_mode")
 	}
 	if input.Limit <= 0 {
-		input.Limit = 10
+		input.Limit = searchDefaultLimit
+		if input.RetrievalMode == "list" {
+			input.Limit = listDefaultLimit
+		}
 	}
 	if input.Limit > 100 {
 		input.Limit = 100
+	}
+	if strings.TrimSpace(input.Cursor) != "" && input.RetrievalMode != "list" {
+		return SearchMemoryInput{}, NewError(CodeInvalidArgument, "cursor is supported only by memory_list")
 	}
 	if input.CandidateLimit <= 0 {
 		input.CandidateLimit = 100
@@ -225,6 +256,39 @@ func normalizeSearchInput(input SearchMemoryInput) (SearchMemoryInput, error) {
 	}
 
 	return input, nil
+}
+
+/**
+ * normalizeSearchNamespace 決定檢索範圍：有 selector 時預設 exact，沒有 selector 時只能是 all（全庫）。
+ */
+func normalizeSearchNamespace(namespace, namespaceMatch string) (string, string, error) {
+	if strings.TrimSpace(namespace) == "" {
+		if namespaceMatch != "" && namespaceMatch != domain.NamespaceMatchAll {
+			return "", "", NewError(
+				CodeInvalidArgument,
+				"namespace_match "+namespaceMatch+" requires a namespace selector; omit namespace_match or use all",
+			)
+		}
+
+		return "", domain.NamespaceMatchAll, nil
+	}
+
+	normalized, err := normalizeNamespace(namespace)
+	if err != nil {
+		return "", "", err
+	}
+	if namespaceMatch == "" {
+		namespaceMatch = domain.NamespaceMatchExact
+	}
+	switch namespaceMatch {
+	case domain.NamespaceMatchExact, domain.NamespaceMatchSubtree:
+	case domain.NamespaceMatchAll:
+		return "", "", NewError(CodeInvalidArgument, "namespace_match all cannot be combined with a namespace selector")
+	default:
+		return "", "", NewError(CodeInvalidArgument, "namespace_match must be exact, subtree, or all")
+	}
+
+	return normalized, namespaceMatch, nil
 }
 
 func selectedChannels(mode string) []string {
@@ -284,15 +348,28 @@ func (s *Store) listMemory(
 	input SearchMemoryInput,
 	started time.Time,
 ) (domain.SearchResponse, error) {
+	memoryOnly := !resultKindAllowed(input.Kinds, "source_chunk")
+	var cursor *listCursor
+	if strings.TrimSpace(input.Cursor) != "" {
+		if !memoryOnly {
+			return domain.SearchResponse{}, NewError(CodeInvalidArgument, "cursor is supported only for memory listings")
+		}
+		decoded, err := decodeListCursor(input.Cursor)
+		if err != nil {
+			return domain.SearchResponse{}, err
+		}
+		cursor = &decoded
+	}
+
 	candidates := make([]searchCandidate, 0)
 	if resultKindAllowed(input.Kinds, "memory") {
-		memoryCandidates, err := s.queryMemoryList(ctx, input)
+		memoryCandidates, err := s.queryMemoryList(ctx, input, cursor)
 		if err != nil {
 			return domain.SearchResponse{}, err
 		}
 		candidates = append(candidates, memoryCandidates...)
 	}
-	if resultKindAllowed(input.Kinds, "source_chunk") {
+	if !memoryOnly {
 		sourceCandidates, err := s.querySourceList(ctx, input)
 		if err != nil {
 			return domain.SearchResponse{}, err
@@ -307,6 +384,15 @@ func (s *Store) listMemory(
 		return candidateKey(candidates[i]) < candidateKey(candidates[j])
 	})
 
+	// 多撈一筆只是為了知道有沒有下一頁
+	nextCursor := ""
+	if len(candidates) > input.Limit {
+		candidates = candidates[:input.Limit]
+		if memoryOnly {
+			nextCursor = encodeListCursor(candidates[len(candidates)-1])
+		}
+	}
+
 	results := make([]domain.SearchResult, len(candidates))
 	for index, candidate := range candidates {
 		result := candidate.Result
@@ -317,10 +403,6 @@ func (s *Store) listMemory(
 		results[index] = result
 	}
 	applySearchDetail(results, input.DetailLevel)
-	count := len(results)
-	if len(results) > input.Limit {
-		results = results[:input.Limit]
-	}
 
 	return domain.SearchResponse{
 		Results:         results,
@@ -331,16 +413,30 @@ func (s *Store) listMemory(
 		DetailLevel:     input.DetailLevel,
 		SemanticEnabled: s.embedding != nil && s.embedding.Enabled(),
 		DurationMS:      time.Since(started).Milliseconds(),
-		CandidateCounts: map[string]int{"list": count},
+		CandidateCounts: map[string]int{"list": len(results)},
+		NextCursor:      nextCursor,
 	}, nil
 }
 
-func (s *Store) queryMemoryList(ctx context.Context, input SearchMemoryInput) ([]searchCandidate, error) {
+func (s *Store) queryMemoryList(
+	ctx context.Context,
+	input SearchMemoryInput,
+	cursor *listCursor,
+) ([]searchCandidate, error) {
 	filters, args, err := buildMemoryFilters(input, "m", nil)
 	if err != nil {
 		return nil, err
 	}
-	args = append(args, input.CandidateLimit)
+	if cursor != nil {
+		args = append(args, cursor.UpdatedAt, cursor.ID)
+		filters += fmt.Sprintf(
+			" AND (m.updated_at < $%d OR (m.updated_at = $%d AND m.id > $%d))",
+			len(args)-1,
+			len(args)-1,
+			len(args),
+		)
+	}
+	args = append(args, input.Limit+1)
 
 	query := `SELECT ` + memorySearchColumns(`0.0`) + `
         FROM memories m
@@ -365,7 +461,7 @@ func (s *Store) querySourceList(ctx context.Context, input SearchMemoryInput) ([
 	if err != nil {
 		return nil, err
 	}
-	args = append(args, input.CandidateLimit)
+	args = append(args, input.Limit+1)
 
 	query := `SELECT ` + sourceSearchColumns(`0.0`) + `
         FROM source_chunks c
@@ -670,9 +766,9 @@ func buildMemoryFilters(input SearchMemoryInput, alias string, args []any) (stri
 		args = append(args, "%"+escapeLikePattern(input.SourcePath)+"%")
 		conditions = append(conditions, alias+".source_path ILIKE $"+fmt.Sprint(len(args))+` ESCAPE E'\\'`)
 	}
-	conditions, args = appendTimeFilter(conditions, args, alias+".created_at", input.CreatedAfter, input.CreatedBefore)
-	conditions, args = appendTimeFilter(conditions, args, alias+".updated_at", input.UpdatedAfter, input.UpdatedBefore)
-	conditions, args = appendTimeFilter(conditions, args, alias+".observed_at", input.ObservedAfter, input.ObservedBefore)
+	conditions, args = appendTimeFilter(conditions, args, alias+".created_at", input.CreatedAfter.TimeValue(), input.CreatedBefore.TimeValue())
+	conditions, args = appendTimeFilter(conditions, args, alias+".updated_at", input.UpdatedAfter.TimeValue(), input.UpdatedBefore.TimeValue())
+	conditions, args = appendTimeFilter(conditions, args, alias+".observed_at", input.ObservedAfter.TimeValue(), input.ObservedBefore.TimeValue())
 
 	return strings.Join(conditions, " AND "), args, nil
 }
@@ -700,9 +796,9 @@ func buildSourceFilters(input SearchMemoryInput, alias string, args []any) (stri
 		args = append(args, "%"+escapeLikePattern(input.SourcePath)+"%")
 		conditions = append(conditions, alias+".original_absolute_path ILIKE $"+fmt.Sprint(len(args))+` ESCAPE E'\\'`)
 	}
-	conditions, args = appendTimeFilter(conditions, args, alias+".created_at", input.CreatedAfter, input.CreatedBefore)
-	conditions, args = appendTimeFilter(conditions, args, alias+".updated_at", input.UpdatedAfter, input.UpdatedBefore)
-	conditions, args = appendTimeFilter(conditions, args, alias+".mtime", input.ObservedAfter, input.ObservedBefore)
+	conditions, args = appendTimeFilter(conditions, args, alias+".created_at", input.CreatedAfter.TimeValue(), input.CreatedBefore.TimeValue())
+	conditions, args = appendTimeFilter(conditions, args, alias+".updated_at", input.UpdatedAfter.TimeValue(), input.UpdatedBefore.TimeValue())
+	conditions, args = appendTimeFilter(conditions, args, alias+".mtime", input.ObservedAfter.TimeValue(), input.ObservedBefore.TimeValue())
 
 	return strings.Join(conditions, " AND "), args, nil
 }
@@ -714,6 +810,10 @@ func appendNamespaceFilter(
 	namespace string,
 	namespaceMatch string,
 ) ([]string, []any) {
+	if namespaceMatch == domain.NamespaceMatchAll {
+		return conditions, args
+	}
+
 	args = append(args, namespace)
 	exactPlaceholder := "$" + fmt.Sprint(len(args))
 	if namespaceMatch != domain.NamespaceMatchSubtree {
@@ -1141,10 +1241,13 @@ func applySearchDetail(results []domain.SearchResult, detailLevel string) {
 		results[index].InstallationCode = ""
 		results[index].WorkspaceCode = ""
 		results[index].SourceHash = ""
-		if detailLevel == domain.SearchDetailCompact {
+		if detailLevel == domain.SearchDetailCompact || detailLevel == domain.SearchDetailIndex {
 			results[index].Evidence = nil
 			results[index].SourcePath = ""
 			results[index].SourceRange = nil
+		}
+		if detailLevel == domain.SearchDetailIndex {
+			results[index].Snippet = ""
 		}
 	}
 }

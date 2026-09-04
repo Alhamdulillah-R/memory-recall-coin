@@ -21,12 +21,12 @@ const (
 	recallMaximumRoots  = 8
 )
 
-// RecallInput describes an opinionated search over one or more explicit namespace selectors.
+// RecallInput describes an opinionated search over zero or more explicit namespace selectors.
 type RecallInput struct {
 	Query              string   `json:"query" jsonschema:"natural-language or exact-text recall query"`
-	Namespaces         []string `json:"namespaces,omitempty" jsonschema:"explicit namespace paths; at least one path or sequence is required"`
-	NamespaceSequences []int64  `json:"namespace_sequences,omitempty" jsonschema:"explicit stable namespace sequences; at least one path or sequence is required"`
-	NamespaceMatch     string   `json:"namespace_match,omitempty" jsonschema:"exact or subtree; default subtree"`
+	Namespaces         []string `json:"namespaces,omitempty" jsonschema:"explicit namespace paths; omit every selector to recall from all namespaces"`
+	NamespaceSequences []int64  `json:"namespace_sequences,omitempty" jsonschema:"explicit stable namespace sequences; omit every selector to recall from all namespaces"`
+	NamespaceMatch     string   `json:"namespace_match,omitempty" jsonschema:"exact or subtree; default subtree; ignored when no selector is given"`
 	ScopeMode          string   `json:"scope_mode,omitempty" jsonschema:"prefer_local, local_only, project_only, or all_devices; default all_devices"`
 	Limit              int      `json:"limit,omitempty" jsonschema:"global maximum results from 1 to 100; default 10"`
 }
@@ -55,7 +55,8 @@ type RecallResult struct {
 type RecallAttempt struct {
 	RequestedNamespace         string `json:"requested_namespace,omitempty"`
 	RequestedNamespaceSequence *int64 `json:"requested_namespace_sequence,omitempty"`
-	ResolvedNamespace          string `json:"resolved_namespace"`
+	AllNamespaces              bool   `json:"all_namespaces,omitempty"`
+	ResolvedNamespace          string `json:"resolved_namespace,omitempty"`
 	ResultCount                int    `json:"result_count"`
 	SemanticEnabled            bool   `json:"semantic_enabled"`
 	SemanticError              string `json:"semantic_error,omitempty"`
@@ -78,6 +79,7 @@ type RecallResponse struct {
 type recallSelector struct {
 	namespace         string
 	namespaceSequence *int64
+	allNamespaces     bool
 }
 
 // applyRecallInputSchemaConstraints makes the multi-namespace contract explicit to MCP clients.
@@ -87,10 +89,8 @@ func applyRecallInputSchemaConstraints(schema *jsonschema.Schema) {
 	}
 
 	const namespacePattern = `^[a-z0-9]([a-z0-9._-]*[a-z0-9])?(/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)*$`
-	one := 1
 	zero := 0.0
 	if namespaces, exists := schema.Properties["namespaces"]; exists {
-		namespaces.MinItems = &one
 		maxItems := recallMaximumRoots
 		namespaces.MaxItems = &maxItems
 		namespaces.UniqueItems = true
@@ -101,7 +101,6 @@ func applyRecallInputSchemaConstraints(schema *jsonschema.Schema) {
 		}
 	}
 	if sequences, exists := schema.Properties["namespace_sequences"]; exists {
-		sequences.MinItems = &one
 		maxItems := recallMaximumRoots
 		sequences.MaxItems = &maxItems
 		sequences.UniqueItems = true
@@ -109,10 +108,6 @@ func applyRecallInputSchemaConstraints(schema *jsonschema.Schema) {
 			sequences.Items.Minimum = &zero
 		}
 	}
-	schema.AnyOf = append(schema.AnyOf,
-		&jsonschema.Schema{Required: []string{"namespaces"}},
-		&jsonschema.Schema{Required: []string{"namespace_sequences"}},
-	)
 
 	setPropertyEnum(schema, "namespace_match", []string{
 		domain.NamespaceMatchExact,
@@ -154,10 +149,14 @@ func (h *Handlers) memoryRecall(
 			return nil, RecallResponse{}, err
 		}
 
+		namespaceMatch := normalized.NamespaceMatch
+		if selector.allNamespaces {
+			namespaceMatch = domain.NamespaceMatchAll
+		}
 		response, searchErr := h.backend.SearchMemory(ctx, service.SearchMemoryInput{
 			Namespace:         selector.namespace,
 			NamespaceSequence: selector.namespaceSequence,
-			NamespaceMatch:    normalized.NamespaceMatch,
+			NamespaceMatch:    namespaceMatch,
 			Query:             normalized.Query,
 			RetrievalMode:     recallRetrievalMode,
 			ScopeMode:         normalized.ScopeMode,
@@ -178,11 +177,16 @@ func (h *Handlers) memoryRecall(
 		results = results[:normalized.Limit]
 	}
 
+	responseMatch := normalized.NamespaceMatch
+	if len(selectors) == 1 && selectors[0].allNamespaces {
+		responseMatch = domain.NamespaceMatchAll
+	}
+
 	return nil, RecallResponse{
 		Results:        projectRecallResults(results),
 		Attempts:       attempts,
 		Query:          normalized.Query,
-		NamespaceMatch: normalized.NamespaceMatch,
+		NamespaceMatch: responseMatch,
 		ScopeMode:      normalized.ScopeMode,
 		DetailLevel:    domain.SearchDetailEvidence,
 		RetrievalMode:  recallRetrievalMode,
@@ -195,12 +199,6 @@ func normalizeRecallInput(input RecallInput) (RecallInput, error) {
 	input.Query = strings.TrimSpace(input.Query)
 	if input.Query == "" {
 		return RecallInput{}, service.NewError(service.CodeInvalidArgument, "query is required")
-	}
-	if len(input.Namespaces) == 0 && len(input.NamespaceSequences) == 0 {
-		return RecallInput{}, service.NewError(
-			service.CodeInvalidArgument,
-			"namespaces or namespace_sequences must contain at least one selector",
-		)
 	}
 	if len(input.Namespaces)+len(input.NamespaceSequences) > recallMaximumRoots {
 		return RecallInput{}, service.NewError(service.CodeInvalidArgument, "at most 8 namespace selectors are allowed")
@@ -271,6 +269,11 @@ func projectRecallResults(results []domain.SearchResult) []RecallResult {
 }
 
 func recallSelectors(input RecallInput) []recallSelector {
+	// 完全沒給 selector 就做一次全庫檢索
+	if len(input.Namespaces) == 0 && len(input.NamespaceSequences) == 0 {
+		return []recallSelector{{allNamespaces: true}}
+	}
+
 	selectors := make([]recallSelector, 0, len(input.Namespaces)+len(input.NamespaceSequences))
 	for _, namespace := range input.Namespaces {
 		selectors = append(selectors, recallSelector{namespace: namespace})
@@ -287,6 +290,7 @@ func newRecallAttempt(selector recallSelector, response domain.SearchResponse) R
 	attempt := RecallAttempt{
 		RequestedNamespace:         selector.namespace,
 		RequestedNamespaceSequence: selector.namespaceSequence,
+		AllNamespaces:              selector.allNamespaces,
 		ResolvedNamespace:          response.Namespace,
 		ResultCount:                len(response.Results),
 		SemanticEnabled:            response.SemanticEnabled,
