@@ -240,6 +240,7 @@ type SearchResult struct {
 	ExpiresAt         *time.Time      `json:"expires_at,omitempty"`
 	Version           int64           `json:"version"`
 	IsLocal           bool            `json:"is_local"`
+	InferredClaims    []string        `json:"inferred_claims,omitempty"`
 	Score             ScoreBreakdown  `json:"score"`
 }
 
@@ -285,6 +286,7 @@ type MemoryListItem struct {
 	ExpiresAt         *time.Time      `json:"expires_at,omitempty"`
 	Version           int64           `json:"version"`
 	IsLocal           bool            `json:"is_local"`
+	InferredClaims    []string        `json:"inferred_claims,omitempty"`
 }
 
 // MemoryListResponse contains filter-only memory results without retrieval diagnostics.
@@ -329,6 +331,7 @@ func NewMemoryListResponse(response SearchResponse) MemoryListResponse {
 			ExpiresAt:         result.ExpiresAt,
 			Version:           result.Version,
 			IsLocal:           result.IsLocal,
+			InferredClaims:    result.InferredClaims,
 		}
 	}
 
@@ -409,6 +412,58 @@ type NamespaceDeleteResult struct {
 	Counts            NamespaceDeleteCounts `json:"counts"`
 	AffectedWatchIDs  []string              `json:"affected_watch_ids,omitempty"`
 	Warnings          []string              `json:"warnings,omitempty"`
+}
+
+// BoardMessage 是公共板 thread 裡的一則留言。
+type BoardMessage struct {
+	ID        string    `json:"id"`
+	ThreadID  string    `json:"thread_id"`
+	Body      string    `json:"body"`
+	Author    string    `json:"author,omitempty"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// BoardThread 是帶 namespace tag 的公共討論串，只有 open / resolved 兩態。
+type BoardThread struct {
+	ID               string         `json:"id"`
+	Tags             []string       `json:"tags"`
+	Status           string         `json:"status"`
+	Resolution       string         `json:"resolution,omitempty"`
+	ResolvedMemoryID string         `json:"resolved_memory_id,omitempty"`
+	ResolvedBy       string         `json:"resolved_by,omitempty"`
+	ResolvedAt       *time.Time     `json:"resolved_at,omitempty"`
+	MessageCount     int            `json:"message_count"`
+	CreatedBy        string         `json:"created_by"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
+	Messages         []BoardMessage `json:"messages,omitempty"`
+}
+
+// BoardTagCount 是一個 tag 底下還沒 resolve 的 thread 數。
+type BoardTagCount struct {
+	Tag          string    `json:"tag"`
+	OpenThreads  int       `json:"open_threads"`
+	LastActivity time.Time `json:"last_activity"`
+}
+
+// BoardCounts 是 SessionStart 用的一行摘要加上每 tag 明細。
+type BoardCounts struct {
+	Line      string          `json:"line"`
+	TotalOpen int             `json:"total_open"`
+	Counts    []BoardTagCount `json:"counts"`
+}
+
+// BoardReadResponse 回傳帶完整留言的 thread 清單。
+type BoardReadResponse struct {
+	Threads []BoardThread `json:"threads"`
+	Count   int           `json:"count"`
+}
+
+// BoardResolveResult 回傳歸檔後的 thread 與升格出的 memory id。
+type BoardResolveResult struct {
+	Thread   BoardThread `json:"thread"`
+	MemoryID string      `json:"memory_id,omitempty"`
 }
 
 // IngestedFile carries local file content to the central source index.

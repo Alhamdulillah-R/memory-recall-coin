@@ -179,6 +179,16 @@ func (s *Server) dispatch(ctx context.Context, request incomingRPCRequest) (any,
 		return dispatchInput(ctx, request, s.backend.SourceStatus)
 	case "memory_source_delete":
 		return dispatchInput(ctx, request, s.backend.DeleteSource)
+	case "board_post":
+		return dispatchInput(ctx, request, s.backend.PostBoardThread)
+	case "board_reply":
+		return dispatchInput(ctx, request, s.backend.ReplyBoardThread)
+	case "board_counts":
+		return dispatchInput(ctx, request, s.backend.BoardCounts)
+	case "board_read":
+		return dispatchInput(ctx, request, s.backend.ReadBoard)
+	case "board_resolve":
+		return dispatchInput(ctx, request, s.backend.ResolveBoardThread)
 	case "memory_health":
 		return s.backend.Health(ctx)
 	default:
@@ -251,6 +261,19 @@ func applyCaller(input any, caller domain.CallerIdentity) {
 		value.Caller = caller
 	case *service.DeleteSourceInput:
 		value.Caller = caller
+	case *service.BoardPostInput:
+		value.Caller = caller
+	case *service.BoardReplyInput:
+		value.Caller = caller
+	case *service.BoardCountsInput:
+		value.Caller = caller
+	case *service.BoardReadInput:
+		value.Caller = caller
+	case *service.BoardResolveInput:
+		value.Caller = caller
+		if value.PromoteToMemory != nil {
+			value.PromoteToMemory.Caller = caller
+		}
 	}
 }
 

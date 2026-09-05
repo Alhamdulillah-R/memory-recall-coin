@@ -445,6 +445,67 @@ func (c *Client) DeleteSource(ctx context.Context, input service.DeleteSourceInp
 	return callRPC[domain.Source](ctx, c, "memory_source_delete", input, caller)
 }
 
+// PostBoardThread forwards board_post.
+func (c *Client) PostBoardThread(ctx context.Context, input service.BoardPostInput) (domain.BoardThread, error) {
+	caller, err := c.caller(ctx, true)
+	if err != nil {
+		return domain.BoardThread{}, err
+	}
+	input.Caller = caller
+
+	return callRPC[domain.BoardThread](ctx, c, "board_post", input, caller)
+}
+
+// ReplyBoardThread forwards board_reply.
+func (c *Client) ReplyBoardThread(ctx context.Context, input service.BoardReplyInput) (domain.BoardThread, error) {
+	caller, err := c.caller(ctx, true)
+	if err != nil {
+		return domain.BoardThread{}, err
+	}
+	input.Caller = caller
+
+	return callRPC[domain.BoardThread](ctx, c, "board_reply", input, caller)
+}
+
+// BoardCounts forwards board_counts.
+func (c *Client) BoardCounts(ctx context.Context, input service.BoardCountsInput) (domain.BoardCounts, error) {
+	caller, err := c.caller(ctx, true)
+	if err != nil {
+		return domain.BoardCounts{}, err
+	}
+	input.Caller = caller
+
+	return callRPC[domain.BoardCounts](ctx, c, "board_counts", input, caller)
+}
+
+// ReadBoard forwards board_read.
+func (c *Client) ReadBoard(ctx context.Context, input service.BoardReadInput) (domain.BoardReadResponse, error) {
+	caller, err := c.caller(ctx, true)
+	if err != nil {
+		return domain.BoardReadResponse{}, err
+	}
+	input.Caller = caller
+
+	return callRPC[domain.BoardReadResponse](ctx, c, "board_read", input, caller)
+}
+
+// ResolveBoardThread forwards board_resolve, applying memory defaults to the promoted memory.
+func (c *Client) ResolveBoardThread(ctx context.Context, input service.BoardResolveInput) (domain.BoardResolveResult, error) {
+	caller, err := c.caller(ctx, true)
+	if err != nil {
+		return domain.BoardResolveResult{}, err
+	}
+	if input.PromoteToMemory != nil {
+		promote := *input.PromoteToMemory
+		c.applyMemoryDefaults(&promote.Namespace, &promote.ScopeType, &promote.ScopeID, &caller)
+		promote.Caller = caller
+		input.PromoteToMemory = &promote
+	}
+	input.Caller = caller
+
+	return callRPC[domain.BoardResolveResult](ctx, c, "board_resolve", input, caller)
+}
+
 // Health forwards memory_health without requiring device registration.
 func (c *Client) Health(ctx context.Context) (service.HealthResult, error) {
 	return callRPC[service.HealthResult](ctx, c, "memory_health", struct{}{}, domain.CallerIdentity{})

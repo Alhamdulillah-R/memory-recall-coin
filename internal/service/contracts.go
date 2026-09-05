@@ -46,8 +46,9 @@ type PatchMemoryInput struct {
 	ExpectedVersion   int64                 `json:"expected_version"`
 	Title             *string               `json:"title,omitempty"`
 	Summary           *string               `json:"summary,omitempty" jsonschema:"1-3 sentence abstract (max 500 chars); add one to older memories that lack it"`
-	Content           *string               `json:"content,omitempty" jsonschema:"replaces the whole content; mutually exclusive with append_content"`
-	AppendContent     *string               `json:"append_content,omitempty" jsonschema:"text appended to the current content after a blank line; mutually exclusive with content"`
+	Content           *string               `json:"content,omitempty" jsonschema:"replaces the whole content; mutually exclusive with append_content and amend"`
+	AppendContent     *string               `json:"append_content,omitempty" jsonschema:"text appended to the current content after a blank line; mutually exclusive with content and amend"`
+	Amend             *AmendContent         `json:"amend,omitempty" jsonschema:"replace one passage in place: anchor must occur exactly once in the current content; the old passage stays in memory_history; mutually exclusive with content and append_content"`
 	Type              *string               `json:"type,omitempty"`
 	MetadataMerge     json.RawMessage       `json:"metadata_merge,omitempty" jsonschema:"JSON object merged into current metadata; null values delete keys"`
 	ReplaceTags       *[]string             `json:"replace_tags,omitempty"`
@@ -66,6 +67,12 @@ type PatchMemoryInput struct {
 	UpdatedBy         string                `json:"updated_by,omitempty"`
 	IdempotencyKey    string                `json:"idempotency_key,omitempty"`
 	Caller            domain.CallerIdentity `json:"-"`
+}
+
+// AmendContent 描述一次局部修正：把 content 裡唯一出現的 anchor 換成 replacement。
+type AmendContent struct {
+	Anchor      string `json:"anchor" jsonschema:"exact text of the passage to replace; must match exactly once"`
+	Replacement string `json:"replacement" jsonschema:"new text for that passage; empty string deletes the passage"`
 }
 
 // GetMemoryInput reads the current memory or a historical version.
@@ -108,6 +115,7 @@ type SearchMemoryInput struct {
 	IncludeSuperseded bool              `json:"include_superseded,omitempty"`
 	IncludeDeleted    bool              `json:"include_deleted,omitempty"`
 	Limit             int               `json:"limit,omitempty" jsonschema:"maximum results from 1 to 100; default 10"`
+	LimitPerKind      bool              `json:"limit_per_kind,omitempty" jsonschema:"apply limit separately to memory and source_chunk results so curated memories are never crowded out by chunks"`
 	CandidateLimit    int               `json:"candidate_limit,omitempty" jsonschema:"per-channel candidate limit from 10 to 500; default 100"`
 	// 只有 list retrieval 用的 keyset cursor，由 ListMemoryInput 帶入
 	Cursor string                `json:"-"`
@@ -401,5 +409,10 @@ type Backend interface {
 	SyncSources(context.Context, SyncSourcesInput) (domain.IngestionSummary, error)
 	SourceStatus(context.Context, SourceStatusInput) (domain.SourceStatus, error)
 	DeleteSource(context.Context, DeleteSourceInput) (domain.Source, error)
+	PostBoardThread(context.Context, BoardPostInput) (domain.BoardThread, error)
+	ReplyBoardThread(context.Context, BoardReplyInput) (domain.BoardThread, error)
+	BoardCounts(context.Context, BoardCountsInput) (domain.BoardCounts, error)
+	ReadBoard(context.Context, BoardReadInput) (domain.BoardReadResponse, error)
+	ResolveBoardThread(context.Context, BoardResolveInput) (domain.BoardResolveResult, error)
 	Health(context.Context) (HealthResult, error)
 }

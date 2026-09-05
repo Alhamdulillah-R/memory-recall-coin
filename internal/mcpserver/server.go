@@ -162,7 +162,7 @@ func New(backend service.Backend, options Options) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "memory-recall-coin", Version: options.Version},
 		&mcp.ServerOptions{
-			Instructions: `Primary workflow: memory_put records durable knowledge, memory_recall performs opinionated recall across namespace roots (omit selectors to recall from every namespace), memory_search provides low-level retrieval controls, memory_list browses by filters with cursor pagination, and memory_get reads one exact ID or version. Reads accept an optional namespace path or stable namespace sequence; without one they search every namespace (namespace_match=all). Writes require an existing explicit namespace and never create namespaces implicitly. memory_put requires a summary: 1-3 sentences (max 500 chars) stating the conclusion and when it applies, written for a future agent deciding whether to open the full content; recall, search and list return summary alongside the query snippet. When you touch an older memory whose results show no summary, add one with memory_patch. Use namespace_create to create one node at a time; a child requires its direct parent to exist. namespace_match defaults to exact for low-level tools when a selector is given, while memory_recall defaults to subtree and all_devices. Use namespace_list without parent selectors to discover every top-level root (format=tree prints a paste-ready tree), or with exactly one of parent and parent_sequence to browse descendants. memory_put rejects near-duplicate titles or content in the same namespace with FAILED_PRECONDITION and lists the candidates; patch or supersede them, or pass allow_similar=true. Write tools return a compact receipt (id, version, status, similar_memories); use memory_get for full content. memory_patch append_content appends text without resending the whole content. Timestamps accept RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS. detail_level=index returns only ids, titles, tags and status. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths.`,
+			Instructions: `Primary workflow: memory_put records durable knowledge, memory_recall performs opinionated recall across namespace roots (omit selectors to recall from every namespace), memory_search provides low-level retrieval controls, memory_list browses by filters with cursor pagination, and memory_get reads one exact ID or version. Reads accept an optional namespace path or stable namespace sequence; without one they search every namespace (namespace_match=all). Writes require an existing explicit namespace and never create namespaces implicitly. memory_put requires a summary: 1-3 sentences (max 500 chars) stating the conclusion and when it applies, written for a future agent deciding whether to open the full content; recall, search and list return summary alongside the query snippet. When you touch an older memory whose results show no summary, add one with memory_patch. Use namespace_create to create one node at a time; a child requires its direct parent to exist. namespace_match defaults to exact for low-level tools when a selector is given, while memory_recall defaults to subtree and all_devices. Use namespace_list without parent selectors to discover every top-level root (format=tree prints a paste-ready tree), or with exactly one of parent and parent_sequence to browse descendants. memory_put rejects near-duplicate titles or content in the same namespace with FAILED_PRECONDITION and lists the candidates; patch or supersede them, or pass allow_similar=true. Write tools return a compact receipt (id, version, status, similar_memories); use memory_get for full content. memory_patch append_content appends text without resending the whole content; memory_patch amend {anchor, replacement} corrects one passage in place so the first screen of a memory always states the current conclusion while memory_history keeps the superseded wording. Mark claims you inferred rather than measured with [inferred] in the content; a memory containing [inferred] cannot be verification_state=confirmed, and recall lists those lines as inferred_claims. Timestamps accept RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS. detail_level=index returns only ids, titles, tags and status. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths. The board (board_post, board_counts, board_read, board_reply, board_resolve) is a public notice board for agents in other sessions: tag threads with the namespaces they concern, ignore threads outside your own responsibility, and always close a thread with board_resolve, promoting a durable conclusion to a memory, so the board never degrades into a log.`,
 			Logger:       logger,
 			PageSize:     100,
 		},
@@ -176,10 +176,10 @@ func New(backend service.Backend, options Options) *mcp.Server {
 func addTools(server *mcp.Server, handlers *Handlers) {
 	catalog := make(toolSchemaCatalog, 27)
 	addTypedTool(server, catalog, tool("memory_put", "Create a versioned memory with a required 1-3 sentence summary, evidence, scope and optional TTL; near-duplicates in the namespace are rejected unless allow_similar=true. Returns a compact receipt.", false, false, false), handlers.putMemory)
-	addTypedTool(server, catalog, tool("memory_patch", "Patch mutable memory fields using optimistic concurrency; append_content appends text without resending the whole content. Returns a compact receipt.", false, true, false), handlers.patchMemory)
+	addTypedTool(server, catalog, tool("memory_patch", "Patch mutable memory fields using optimistic concurrency; append_content appends text, amend replaces one passage in place (old passage kept in history). Returns a compact receipt.", false, true, false), handlers.patchMemory)
 	addTypedTool(server, catalog, tool("memory_get", "Read a current memory or historical version by ID.", true, true, false), handlers.getMemory)
 	addTypedTool(server, catalog, tool("memory_search", "Recall relevant memories and source chunks by exact, substring, lexical, semantic or hybrid retrieval; omit the namespace selector to search every namespace.", true, true, false), handlers.searchMemory)
-	addTypedTool(server, catalog, tool("memory_recall", "Recall memories and source chunks across namespace paths or sequences with fixed hybrid retrieval, subtree and all_devices defaults; omit selectors to recall from every namespace.", true, true, false), handlers.memoryRecall)
+	addTypedTool(server, catalog, tool("memory_recall", "Recall across namespace paths or sequences with fixed hybrid retrieval, subtree and all_devices defaults; omit selectors to recall from every namespace. Curated memories come back in results, raw source chunks separately in source_chunks, each capped at limit.", true, true, false), handlers.memoryRecall)
 	addTypedTool(server, catalog, tool("memory_list", "Browse memories by scope, type, tags, metadata, lifecycle and time filters without a query; paginate with cursor/next_cursor and use detail_level=index for a compact id/title listing.", true, true, false), handlers.listMemory)
 	addTypedTool(server, catalog, tool("namespace_create", "Explicitly create one namespace; its direct parent must already exist.", false, true, false), handlers.namespaceCreate)
 	addTypedTool(server, catalog, tool("namespace_list", "List every top-level namespace without a parent selector, or browse descendants below exactly one parent path or parent_sequence; format=tree returns a paste-ready text tree.", true, true, false), handlers.namespaceList)
@@ -202,6 +202,11 @@ func addTools(server *mcp.Server, handlers *Handlers) {
 	addTypedTool(server, catalog, tool("device_migrate", "Merge a source logical device into a canonical target without rewriting provenance.", false, true, true), handlers.migrateDevice)
 	addTypedTool(server, catalog, tool("device_whoami", "Resolve the current installation, canonical logical device and workspace identity.", true, true, false), handlers.whoAmI)
 	addTypedTool(server, catalog, tool("memory_health", "Check central PostgreSQL and embedding provider status.", true, true, false), handlers.health)
+	addTypedTool(server, catalog, tool("board_post", "Open a public board thread tagged with the namespaces it concerns, for agents in other sessions to pick up.", false, false, false), handlers.boardPost)
+	addTypedTool(server, catalog, tool("board_counts", "One-line count of open board threads per namespace tag; cheap enough to call at session start.", true, true, false), handlers.boardCounts)
+	addTypedTool(server, catalog, tool("board_read", "Read board threads with their messages, filtered by namespace tags; unresolved only by default.", true, true, false), handlers.boardRead)
+	addTypedTool(server, catalog, tool("board_reply", "Add a message to an open board thread.", false, false, false), handlers.boardReply)
+	addTypedTool(server, catalog, tool("board_resolve", "Close a board thread with a resolution, optionally promoting the conclusion to a memory in the same call.", false, true, false), handlers.boardResolve)
 	server.AddReceivingMiddleware(validationErrorMiddleware(catalog))
 }
 
@@ -488,6 +493,15 @@ func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
 		setPropertyDefault(schema, "dry_run", json.RawMessage("true"))
 	case "memory_history", "memory_source_status":
 		setNumericPropertyRange(schema, "limit", 1, 200)
+	case "board_read":
+		setNumericPropertyRange(schema, "limit", 1, 100)
+	}
+	if toolName == "board_post" || toolName == "board_read" {
+		setArrayPropertyNamespacePattern(schema, "tags")
+	}
+	if toolName == "board_post" {
+		requireInputProperties(schema, "tags", "body")
+		setArrayPropertyBounds(schema, "tags", 1, 8)
 	}
 	if toolName == "memory_source_status" {
 		requireAnyInputProperty(schema, "source_id", "path", "ingestion_id")
@@ -641,6 +655,31 @@ func setArrayPropertyEnum(schema *jsonschema.Schema, propertyName string, values
 			return
 		}
 		property.Items.Enum = stringEnum(values)
+	})
+}
+
+func setArrayPropertyNamespacePattern(schema *jsonschema.Schema, propertyName string) {
+	const pattern = `^[a-z0-9]([a-z0-9._-]*[a-z0-9])?(/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)*$`
+	maxLength := 128
+	walkSchema(schema, func(current *jsonschema.Schema) {
+		property, exists := current.Properties[propertyName]
+		if !exists || property.Items == nil {
+			return
+		}
+		property.Items.Pattern = pattern
+		property.Items.MaxLength = &maxLength
+	})
+}
+
+func setArrayPropertyBounds(schema *jsonschema.Schema, propertyName string, minItems, maxItems int) {
+	walkSchema(schema, func(current *jsonschema.Schema) {
+		property, exists := current.Properties[propertyName]
+		if !exists {
+			return
+		}
+		property.MinItems = &minItems
+		property.MaxItems = &maxItems
+		property.UniqueItems = true
 	})
 }
 
@@ -1123,5 +1162,30 @@ func (h *Handlers) whoAmI(ctx context.Context, _ *mcp.CallToolRequest, input ser
 
 func (h *Handlers) health(ctx context.Context, _ *mcp.CallToolRequest, _ HealthInput) (*mcp.CallToolResult, service.HealthResult, error) {
 	result, err := h.backend.Health(ctx)
+	return nil, result, err
+}
+
+func (h *Handlers) boardPost(ctx context.Context, _ *mcp.CallToolRequest, input service.BoardPostInput) (*mcp.CallToolResult, domain.BoardThread, error) {
+	result, err := h.backend.PostBoardThread(ctx, input)
+	return nil, result, err
+}
+
+func (h *Handlers) boardCounts(ctx context.Context, _ *mcp.CallToolRequest, input service.BoardCountsInput) (*mcp.CallToolResult, domain.BoardCounts, error) {
+	result, err := h.backend.BoardCounts(ctx, input)
+	return nil, result, err
+}
+
+func (h *Handlers) boardRead(ctx context.Context, _ *mcp.CallToolRequest, input service.BoardReadInput) (*mcp.CallToolResult, domain.BoardReadResponse, error) {
+	result, err := h.backend.ReadBoard(ctx, input)
+	return nil, result, err
+}
+
+func (h *Handlers) boardReply(ctx context.Context, _ *mcp.CallToolRequest, input service.BoardReplyInput) (*mcp.CallToolResult, domain.BoardThread, error) {
+	result, err := h.backend.ReplyBoardThread(ctx, input)
+	return nil, result, err
+}
+
+func (h *Handlers) boardResolve(ctx context.Context, _ *mcp.CallToolRequest, input service.BoardResolveInput) (*mcp.CallToolResult, domain.BoardResolveResult, error) {
+	result, err := h.backend.ResolveBoardThread(ctx, input)
 	return nil, result, err
 }

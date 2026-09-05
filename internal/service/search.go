@@ -27,6 +27,14 @@ const (
 	maxEvidenceQuality = 3.0
 	searchDefaultLimit = 10
 	listDefaultLimit   = 25
+	// 正文裡標記推論的記號；帶這個記號的 memory 不能整條 confirmed
+	inferredMarker = "[inferred]"
+	// pg_trgm word_similarity 的候選門檻：query 只要有一段跟正文相近就進候選，再交給 RRF 排
+	wordSimilarityThreshold = "0.3"
+	// lexical 把 query 各詞用 OR 接起來，缺一個詞不再整條落選；排序交給 ts_rank_cd
+	lexicalQueryExpression = `to_tsquery('simple', replace(nullif(plainto_tsquery('simple', $1)::text, ''), '&', '|'))`
+	// 字面 substring 命中的 CASE 分數；低於它的是 word_similarity 的模糊命中
+	literalSubstringScore = 0.5
 )
 
 type searchCandidate struct {
@@ -135,7 +143,9 @@ func (s *Store) SearchMemory(ctx context.Context, input SearchMemoryInput) (doma
 	)
 	fused = filterByMinRelevance(fused, normalized.MinRelevance)
 	applySearchDetail(fused, normalized.DetailLevel)
-	if len(fused) > normalized.Limit {
+	if normalized.LimitPerKind {
+		fused = truncatePerKind(fused, normalized.Limit)
+	} else if len(fused) > normalized.Limit {
 		fused = fused[:normalized.Limit]
 	}
 
@@ -584,12 +594,13 @@ func (s *Store) queryMemoryTextChannel(ctx context.Context, input SearchMemoryIn
             WHEN lower($1) = ANY(m.tags) THEN 2.0
             ELSE 0.0 END`
 	case "substring":
-		predicate = `m.search_text ILIKE ` + substringPatternPlaceholder + ` ESCAPE E'\\'`
-		scoreExpression = `greatest(similarity(m.search_text, $1),
+		predicate = `(m.search_text ILIKE ` + substringPatternPlaceholder + ` ESCAPE E'\\'
+            OR word_similarity($1, m.search_text) >= ` + wordSimilarityThreshold + `)`
+		scoreExpression = `greatest(similarity(m.search_text, $1), word_similarity($1, m.search_text),
             CASE WHEN strpos(lower(m.search_text), lower($1)) > 0 THEN 0.5 ELSE 0 END)`
 	case "lexical":
-		predicate = `m.search_tsv @@ websearch_to_tsquery('simple', $1)`
-		scoreExpression = `ts_rank_cd(m.search_tsv, websearch_to_tsquery('simple', $1), 32)`
+		predicate = `m.search_tsv @@ ` + lexicalQueryExpression
+		scoreExpression = `ts_rank_cd(m.search_tsv, ` + lexicalQueryExpression + `, 32)`
 	default:
 		return nil, NewError(CodeInternal, "unknown text channel")
 	}
@@ -646,13 +657,15 @@ func (s *Store) querySourceTextChannel(ctx context.Context, input SearchMemoryIn
             ELSE 0.0 END`
 	case "substring":
 		predicate = `(c.content ILIKE ` + substringPatternPlaceholder + ` ESCAPE E'\\'
-            OR s.original_absolute_path ILIKE ` + substringPatternPlaceholder + ` ESCAPE E'\\')`
+            OR s.original_absolute_path ILIKE ` + substringPatternPlaceholder + ` ESCAPE E'\\'
+            OR word_similarity($1, c.content) >= ` + wordSimilarityThreshold + `)`
 		scoreExpression = `greatest(similarity(c.content, $1), similarity(s.original_absolute_path, $1),
+            word_similarity($1, c.content),
             CASE WHEN strpos(lower(c.content), lower($1)) > 0
                 OR strpos(lower(s.original_absolute_path), lower($1)) > 0 THEN 0.5 ELSE 0 END)`
 	case "lexical":
-		predicate = `c.search_tsv @@ websearch_to_tsquery('simple', $1)`
-		scoreExpression = `ts_rank_cd(c.search_tsv, websearch_to_tsquery('simple', $1), 32)`
+		predicate = `c.search_tsv @@ ` + lexicalQueryExpression
+		scoreExpression = `ts_rank_cd(c.search_tsv, ` + lexicalQueryExpression + `, 32)`
 	default:
 		return nil, NewError(CodeInternal, "unknown source text channel")
 	}
@@ -1159,6 +1172,9 @@ func decorateSearchResult(
 	result.Score.Locality = localityScore(*result, caller)
 	result.IsLocal = result.Score.Locality >= 60
 	result.Snippet = makeSnippet(result.Content, query, 360)
+	if result.Kind == "memory" {
+		result.InferredClaims = extractInferredClaims(result.Content)
+	}
 }
 
 func retrievalRelevance(score domain.ScoreBreakdown, retrievalMode string) float64 {
@@ -1187,8 +1203,11 @@ func hybridRelevance(score domain.ScoreBreakdown) float64 {
 		return clampScore(0.45 + 0.55*exact)
 	}
 	substring := 0.0
-	if score.Substring > 0 {
+	if score.Substring >= literalSubstringScore {
 		substring = 0.55 + 0.4*clampScore(score.Substring)
+	} else if score.Substring > 0 {
+		// 模糊命中放在 semantic 同一量級，不讓它壓過強 semantic
+		substring = 0.3 + 0.5*clampScore(score.Substring)
 	}
 	lexical := 0.0
 	if score.Lexical > 0 {
@@ -1211,6 +1230,41 @@ func rankingBoost(result domain.SearchResult, scopeMode string) float64 {
 	}
 
 	return clampScore(boost)
+}
+
+// truncatePerKind 讓 memory 與 source_chunk 各自最多 limit 筆，保留原本的排序
+func truncatePerKind(results []domain.SearchResult, limit int) []domain.SearchResult {
+	counts := make(map[string]int, 2)
+	kept := make([]domain.SearchResult, 0, len(results))
+	for _, result := range results {
+		if counts[result.Kind] >= limit {
+			continue
+		}
+		counts[result.Kind]++
+		kept = append(kept, result)
+	}
+
+	return kept
+}
+
+// extractInferredClaims 把正文裡標了 [inferred] 的行抽出來，讓 recall 能把推論和實測分開看
+func extractInferredClaims(content string) []string {
+	claims := make([]string, 0)
+	for _, line := range strings.Split(content, "\n") {
+		if !strings.Contains(line, inferredMarker) {
+			continue
+		}
+		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "-*>#| "))
+		if utf8.RuneCountInString(line) > 200 {
+			line = string([]rune(line)[:200]) + "…"
+		}
+		claims = append(claims, line)
+		if len(claims) == 5 {
+			break
+		}
+	}
+
+	return claims
 }
 
 func filterByMinRelevance(

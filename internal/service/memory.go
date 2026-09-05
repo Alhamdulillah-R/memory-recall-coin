@@ -181,6 +181,9 @@ func normalizePutInput(input PutMemoryInput) (PutMemoryInput, error) {
 	if err := validateVerificationState(input.VerificationState); err != nil {
 		return PutMemoryInput{}, err
 	}
+	if err := rejectConfirmedInference(input.VerificationState, input.Content); err != nil {
+		return PutMemoryInput{}, err
+	}
 	if input.Confidence == nil {
 		confidence := 0.5
 		input.Confidence = &confidence
@@ -344,8 +347,22 @@ func (s *Store) PatchMemory(ctx context.Context, input PatchMemoryInput) (domain
 		add("summary = $%d", summary)
 		contentChanged = true
 	}
-	if input.Content != nil && input.AppendContent != nil {
-		return domain.Memory{}, NewError(CodeInvalidArgument, "content and append_content are mutually exclusive")
+	contentModes := 0
+	for _, present := range []bool{input.Content != nil, input.AppendContent != nil, input.Amend != nil} {
+		if present {
+			contentModes++
+		}
+	}
+	if contentModes > 1 {
+		return domain.Memory{}, NewError(CodeInvalidArgument, "content, append_content and amend are mutually exclusive")
+	}
+	if input.Amend != nil {
+		amended, err := amendContent(ctx, tx, input.Namespace, input.ID, input.ExpectedVersion, *input.Amend)
+		if err != nil {
+			return domain.Memory{}, err
+		}
+		add("content = $%d", amended)
+		contentChanged = true
 	}
 	if input.Content != nil {
 		if err := requireNonEmpty("content", *input.Content); err != nil {
@@ -446,6 +463,10 @@ func (s *Store) PatchMemory(ctx context.Context, input PatchMemoryInput) (domain
 	}
 	if err != nil {
 		return domain.Memory{}, WrapError(CodeInternal, "patch memory", err)
+	}
+	// 改完才看得到最終的 state 與 content 組合；不合規就讓 defer rollback 收掉
+	if err := rejectConfirmedInference(memory.VerificationState, memory.Content); err != nil {
+		return domain.Memory{}, err
 	}
 	if contentChanged {
 		if err := s.enqueueMemoryEmbedding(ctx, tx, memory); err != nil {
@@ -1233,6 +1254,66 @@ func (s *Store) updateLifecycle(
 	}
 
 	return memory, nil
+}
+
+/**
+ * amendContent 讀出目前正文，把唯一出現的 anchor 換成 replacement；被換掉的段落靠 revision trigger 留在 history。
+ */
+func amendContent(
+	ctx context.Context,
+	tx pgx.Tx,
+	namespace string,
+	id string,
+	expectedVersion int64,
+	amend AmendContent,
+) (string, error) {
+	if strings.TrimSpace(amend.Anchor) == "" {
+		return "", NewError(CodeInvalidArgument, "amend.anchor is required")
+	}
+
+	var content string
+	err := tx.QueryRow(ctx, `
+		SELECT content FROM memories
+		WHERE namespace = $1 AND id = $2 AND version = $3
+		FOR UPDATE
+	`, namespace, id, expectedVersion).Scan(&content)
+	if errorsIsNoRows(err) {
+		// 交給呼叫端既有的 version conflict / not found 路徑
+		return "", nil
+	}
+	if err != nil {
+		return "", WrapError(CodeInternal, "read content for amend", err)
+	}
+
+	occurrences := strings.Count(content, amend.Anchor)
+	if occurrences != 1 {
+		serviceErr := NewError(CodeInvalidArgument, "amend.anchor must match exactly once in the current content")
+		serviceErr.Details = map[string]any{"occurrences": occurrences, "anchor": amend.Anchor}
+
+		return "", serviceErr
+	}
+
+	amended := strings.TrimSpace(strings.Replace(content, amend.Anchor, amend.Replacement, 1))
+	if amended == "" {
+		return "", NewError(CodeInvalidArgument, "amend would leave the content empty")
+	}
+
+	return amended, nil
+}
+
+// rejectConfirmedInference 不允許正文帶 [inferred] 卻整條標 confirmed
+func rejectConfirmedInference(verificationState, content string) error {
+	if verificationState != "confirmed" || !strings.Contains(content, inferredMarker) {
+		return nil
+	}
+
+	serviceErr := NewError(
+		CodeInvalidArgument,
+		"content contains [inferred] claims, so the memory cannot be confirmed as a whole; use supported or contested, or remove the markers once measured",
+	)
+	serviceErr.Details = map[string]any{"inferred_claims": extractInferredClaims(content)}
+
+	return serviceErr
 }
 
 func (s *Store) versionConflict(ctx context.Context, tx pgx.Tx, namespace, id string, expected int64) error {

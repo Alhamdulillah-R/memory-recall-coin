@@ -176,17 +176,17 @@ codex mcp list
 
 也可以在 Codex/ChatGPT desktop 的 `/mcp` 面板检查连接。配置字段参考 [OpenAI 官方 MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
 
-## 27 个 MCP tools
+## 32 个 MCP tools
 
 Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_recall` 跨显式 namespace roots 完成 opinionated recall，`memory_search` 提供底层检索控制，`memory_list` 无 query 浏览过滤结果，`namespace_list` 浏览 namespace tree，`memory_get` 按 ID/version 精确读取。其余 tools 用于 revision、lifecycle、source ingestion 和 device identity 等高级操作。
 
 | Tool | 作用 |
 |---|---|
 | `memory_put` | 创建带必填 `summary`、scope、evidence、TTL 和 idempotency key 的 versioned memory；同 namespace 存在近似重复时拒绝写入，回传 compact receipt |
-| `memory_patch` | 使用 `expected_version` 修改 mutable fields，并追加 revision；`append_content` 追加内容而不必重送整段 |
+| `memory_patch` | 使用 `expected_version` 修改 mutable fields，并追加 revision；`append_content` 追加内容，`amend` 原地替换一段（旧段落留在 history） |
 | `memory_get` | 按 ID 读取当前 memory 或指定历史 version |
 | `memory_search` | 执行 exact、substring、lexical、semantic、temporal、metadata 和 hybrid retrieval；省略 namespace selector 时搜索全库 |
-| `memory_recall` | 对最多 8 个 namespace path/sequence 固定执行 hybrid memory + source_chunk recall，默认 subtree、all_devices 与 evidence response；不传 selector 时全库 recall |
+| `memory_recall` | 对最多 8 个 namespace path/sequence 固定执行 hybrid recall，默认 subtree、all_devices 与 evidence response；不传 selector 时全库 recall；curated memory 回在 `results`、原始 chunk 回在 `source_chunks`，各自最多 `limit` 条 |
 | `memory_list` | 无需 query，按 scope、type、tag、metadata、lifecycle 和时间过滤浏览 memory；`cursor`/`next_cursor` 分页，`detail_level=index` 只回 id/title/tags/status |
 | `namespace_create` | 显式创建一个 namespace；创建 child 前 direct parent 必须已存在且 active，重复创建 active namespace 为幂等返回 |
 | `namespace_list` | 不传 parent selector 时列出所有顶级 roots；指定 `parent` 或 `parent_sequence` 时浏览其 namespace tree，并返回 direct/subtree memory 与 source counts；`format=tree` 回可直接贴用的文字树 |
@@ -209,6 +209,11 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_recall` 
 | `device_migrate` | 把 source device 合并到 canonical target，同时保留 provenance |
 | `device_whoami` | 查询当前 installation、device、workspace 与 verified caller identity |
 | `memory_health` | 查询 PostgreSQL 与 embedding provider 状态及 server version |
+| `board_post` | 在公共板开一个 thread，`tags` 是它涉及的 namespace（必须已存在），给其他 session 的 agent 看 |
+| `board_counts` | 每个 tag 还有几条未 resolve 的 thread，附一行 `board: a 2 · b 1` 供 SessionStart hook 注入 |
+| `board_read` | 按 tag 拉 thread 与全部留言，默认只拉未 resolve 的 |
+| `board_reply` | 在 open thread 下追留言 |
+| `board_resolve` | 写结论并归档；可带 `promote_to_memory` 在同一调用里把结论写成 memory |
 
 namespace 是小写 slash-separated path，例如 `memory-recall-coin/android/anti-bot`。写入类 request 必须且只能使用一个 selector：`namespace` path，或 `namespace_sequence`。sequence 是数据库分配的持久非负整数，rename 后仍可稳定引用；`0` 是合法值，不能按 false/empty 处理。服务不再从 workspace 或 `MEMORY_DEFAULT_NAMESPACE` 自动补齐。`memory_search`、`memory_list` 和 `memory_recall` 可以整组省略 selector，此时检索全库并在 response 标记 `namespace_match=all`；带 selector 时 `namespace_match` 默认为 `exact`，只有显式传 `subtree` 才包含已解析 namespace 的全部 descendants，`all` 不能与 selector 同时出现。`memory_source_status` 仍要求 selector。scope 仍负责 visibility，namespace hierarchy 不授予或扩展权限。
 
@@ -289,7 +294,23 @@ rex-mirror-realm  [#3 mem 12/188 src 4/211]
 }
 ```
 
+`memory_recall` 把结果分成两段：`results` 只放 curated memory，`source_chunks` 放 ingest 进来的原始文本切片，两段各自按 score 排序并各自截到 `limit`，`memory_count`/`source_chunk_count` 分别计数；这样 curated memory 不会被数量占优的 chunk 淹掉。底层 `memory_search` 的 `limit_per_kind=true` 是同一机制，但仍回单一列表。
+
+substring channel 除了整句 ILIKE 之外加入 `word_similarity(query, search_text) >= 0.3` 的模糊命中，lexical channel 把 query 各词用 OR 连接（`plainto_tsquery` 后 `&`→`|`），query 多带几个记忆里没有的词不再让文本 channel 零候选；模糊命中在 hybrid relevance 里落在 semantic 同一量级，不会压过强 semantic。
+
+正文里用 `[inferred]` 标记推论而非实测的句子：含 `[inferred]` 的 memory 不能整条 `verification_state=confirmed`（`memory_put`/`memory_patch` 返回 `INVALID_ARGUMENT` 并列出这些行），`memory_search`/`memory_recall`/`memory_list` 以 `inferred_claims` 单独列出这些行。实测替换掉推论后用 `memory_patch` 的 `amend` 原地改：`{"amend":{"anchor":"<原文片段>","replacement":"<新文字>"}}`，anchor 必须在当前正文中恰好出现一次，被替换的段落留在 `memory_history`；`amend` 与 `content`、`append_content` 互斥。
+
 `namespaces` 与 `namespace_sequences` 可以混用，总数最多 8 个；两者都不传时做一次全库 recall，`attempts` 里对应项标记 `all_namespaces=true`，response 的 `namespace_match` 为 `all`。带 selector 时 `memory_recall` 默认 `namespace_match=subtree`、`scope_mode=all_devices`，固定同时搜索 memory 与 source chunk，跨重叠 roots 去重后统一排序；每次 namespace lookup 的 resolved path、命中数、semantic 状态与耗时会放在 `attempts`。
+
+### 公共板
+
+公共板给不同 session、不同 project 的 agent 交换信息：`board_post` 开 thread 时带 1–8 个已存在的 namespace 作为 `tags`，其他 agent 用 `board_counts` 看每个 tag 有几条未 resolve、用 `board_read` 按 tag 拉正文，`board_reply` 追留言。不做私聊、不做已读；thread 只有 `open`/`resolved` 两态，`resolved` 后不再收留言。每个 thread 必须用 `board_resolve` 收尾：`resolution` 必填（结论或明确写没有结论），有长期价值时带 `promote_to_memory`（完整的 `memory_put` 参数）在同一调用里把结论写成 memory，thread 记录 `resolved_memory_id`。这样板子不会退化成日志。
+
+建议在 Claude Code 的 `SessionStart` hook 里用 `mcp_tool` 调 `board_counts`，只让那一行计数进入 context，正文由 agent 按自己负责的 tag 主动去拉：
+
+```json
+{"hooks":{"SessionStart":[{"matcher":"startup|resume","hooks":[{"type":"mcp_tool","server":"mcp-controller","tool":"memory-recall__board_counts","input":{},"timeout":20}]}]}}
+```
 
 Tool 业务错误同时设置 `isError=true` 与 `structuredContent={code,message,details}`；`content` 只保留简短可读文本，因此 `VERSION_CONFLICT` 等调用方可以直接读取 structured details 做自纠正。MCP schema validation error 也返回 field-level reason、近似字段 suggestion、required selector group、example 与 `schema_version`。
 

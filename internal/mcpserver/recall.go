@@ -49,6 +49,7 @@ type RecallResult struct {
 	Evidence          json.RawMessage `json:"evidence,omitempty"`
 	SourcePath        string          `json:"source_path,omitempty"`
 	SourceRange       json.RawMessage `json:"source_range,omitempty"`
+	InferredClaims    []string        `json:"inferred_claims,omitempty"`
 	Score             float64         `json:"score"`
 }
 
@@ -64,17 +65,20 @@ type RecallAttempt struct {
 	DurationMS                 int64  `json:"duration_ms"`
 }
 
-// RecallResponse contains globally ranked results without per-channel candidate diagnostics.
+// RecallResponse 把 curated memory 與 source_chunk 分成兩段回，各自最多 limit 筆。
 type RecallResponse struct {
-	Results        []RecallResult  `json:"results"`
-	Attempts       []RecallAttempt `json:"attempts"`
-	Query          string          `json:"query"`
-	NamespaceMatch string          `json:"namespace_match"`
-	ScopeMode      string          `json:"scope_mode"`
-	DetailLevel    string          `json:"detail_level"`
-	RetrievalMode  string          `json:"retrieval_mode"`
-	Count          int             `json:"count"`
-	DurationMS     int64           `json:"duration_ms"`
+	Results          []RecallResult  `json:"results" jsonschema:"curated memories ranked by score; read these first"`
+	SourceChunks     []RecallResult  `json:"source_chunks,omitempty" jsonschema:"raw ingested text chunks ranked by score; supporting material only"`
+	Attempts         []RecallAttempt `json:"attempts"`
+	Query            string          `json:"query"`
+	NamespaceMatch   string          `json:"namespace_match"`
+	ScopeMode        string          `json:"scope_mode"`
+	DetailLevel      string          `json:"detail_level"`
+	RetrievalMode    string          `json:"retrieval_mode"`
+	Count            int             `json:"count"`
+	MemoryCount      int             `json:"memory_count"`
+	SourceChunkCount int             `json:"source_chunk_count"`
+	DurationMS       int64           `json:"duration_ms"`
 }
 
 type recallSelector struct {
@@ -164,6 +168,7 @@ func (h *Handlers) memoryRecall(
 			DetailLevel:       domain.SearchDetailEvidence,
 			Kinds:             []string{"memory", "source_chunk"},
 			Limit:             normalized.Limit,
+			LimitPerKind:      true,
 		})
 		if searchErr != nil {
 			return nil, RecallResponse{}, searchErr
@@ -174,9 +179,7 @@ func (h *Handlers) memoryRecall(
 	}
 
 	sortRecallResults(results)
-	if len(results) > normalized.Limit {
-		results = results[:normalized.Limit]
-	}
+	memories, chunks := splitRecallResults(results, normalized.Limit)
 
 	responseMatch := normalized.NamespaceMatch
 	if len(selectors) == 1 && selectors[0].allNamespaces {
@@ -184,16 +187,35 @@ func (h *Handlers) memoryRecall(
 	}
 
 	return nil, RecallResponse{
-		Results:        projectRecallResults(results),
-		Attempts:       attempts,
-		Query:          normalized.Query,
-		NamespaceMatch: responseMatch,
-		ScopeMode:      normalized.ScopeMode,
-		DetailLevel:    domain.SearchDetailEvidence,
-		RetrievalMode:  recallRetrievalMode,
-		Count:          len(results),
-		DurationMS:     time.Since(startedAt).Milliseconds(),
+		Results:          projectRecallResults(memories),
+		SourceChunks:     projectRecallResults(chunks),
+		Attempts:         attempts,
+		Query:            normalized.Query,
+		NamespaceMatch:   responseMatch,
+		ScopeMode:        normalized.ScopeMode,
+		DetailLevel:      domain.SearchDetailEvidence,
+		RetrievalMode:    recallRetrievalMode,
+		Count:            len(memories) + len(chunks),
+		MemoryCount:      len(memories),
+		SourceChunkCount: len(chunks),
+		DurationMS:       time.Since(startedAt).Milliseconds(),
 	}, nil
+}
+
+// splitRecallResults 把排好序的結果依 kind 分成兩段，各自截到 limit
+func splitRecallResults(results []domain.SearchResult, limit int) ([]domain.SearchResult, []domain.SearchResult) {
+	memories := make([]domain.SearchResult, 0, limit)
+	chunks := make([]domain.SearchResult, 0, limit)
+	for _, result := range results {
+		if result.Kind == "memory" && len(memories) < limit {
+			memories = append(memories, result)
+		}
+		if result.Kind == "source_chunk" && len(chunks) < limit {
+			chunks = append(chunks, result)
+		}
+	}
+
+	return memories, chunks
 }
 
 func normalizeRecallInput(input RecallInput) (RecallInput, error) {
@@ -263,6 +285,7 @@ func projectRecallResults(results []domain.SearchResult) []RecallResult {
 			Evidence:          result.Evidence,
 			SourcePath:        result.SourcePath,
 			SourceRange:       result.SourceRange,
+			InferredClaims:    result.InferredClaims,
 			Score:             result.Score.Final,
 		}
 	}
