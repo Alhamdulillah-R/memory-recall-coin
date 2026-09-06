@@ -2,14 +2,18 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+const outputNoticeProperty = "notice"
 
 const binaryCheckInterval = 15 * time.Second
 
@@ -91,10 +95,46 @@ func staleBinaryMiddleware(watch *binaryWatch) mcp.Middleware {
 				return result, nil
 			}
 			if notice, stale := watch.stale(); stale {
-				callResult.Content = append(callResult.Content, &mcp.TextContent{Text: notice})
+				attachNotice(callResult, notice)
 			}
 
 			return callResult, nil
 		}
 	}
+}
+
+// allowOutputNotice 讓每個成功輸出的 schema 都認得 notice，這樣中介層塞進去的提示不會被 client 的 output 驗證擋掉。
+func allowOutputNotice(schema *jsonschema.Schema) {
+	if schema == nil || schema.Type != "object" {
+		return
+	}
+	if schema.Properties == nil {
+		schema.Properties = make(map[string]*jsonschema.Schema, 1)
+	}
+	schema.Properties[outputNoticeProperty] = &jsonschema.Schema{
+		Type:        "string",
+		Description: "present only when this bridge process is stale and plugin_reload is needed",
+	}
+}
+
+// attachNotice 把提示放進 structuredContent（Claude Code 只呈現這一份），文字內容跟著重生。
+func attachNotice(result *mcp.CallToolResult, notice string) {
+	if result.IsError {
+		return
+	}
+	encoded, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		return
+	}
+	fields := make(map[string]any)
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		return
+	}
+	fields[outputNoticeProperty] = notice
+	rendered, err := json.Marshal(fields)
+	if err != nil {
+		return
+	}
+	result.StructuredContent = fields
+	result.Content = []mcp.Content{&mcp.TextContent{Text: string(rendered)}}
 }

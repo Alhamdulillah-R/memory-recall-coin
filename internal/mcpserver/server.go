@@ -251,6 +251,7 @@ func addTypedTool[Input, Output any](
 	applyNamespaceSelectorConstraint(definition.Name, inputSchema)
 	definition.InputSchema = inputSchema
 	catalog[definition.Name] = inputSchema
+	allowOutputNotice(outputSchema)
 	definition.OutputSchema = &jsonschema.Schema{
 		Type:  "object",
 		OneOf: []*jsonschema.Schema{outputSchema, errorSchema},

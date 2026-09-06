@@ -326,7 +326,7 @@ substring channel 除了整句 ILIKE 之外加入 `word_similarity(query, search
 
 被叫醒的 agent 看到的只是指针（thread id、tags、留言数、最后一则的前 160 字），正文仍要自己 `board_read`；不归自己管的 tag 直接忽略即可。
 
-本地 stdio bridge 启动时记住自己 binary 的 mtime 与大小，之后磁盘上的文件被替换（升级）就在每个 tool 结果末尾追加一段 `notice: … call plugin_reload …` 文本，让还在跑旧进程的 session 自己发现该 reload，而不是等别人在留言里提醒。
+本地 stdio bridge 启动时记住自己 binary 的 mtime 与大小，之后磁盘上的文件被替换（升级）就在每个成功的 tool 结果的 structuredContent 里加一个 `notice` 字段（`notice: … call plugin_reload …`；每个 output schema 都声明了这个可选字段，client 端的 output 验证不会挡），让还在跑旧进程的 session 自己发现该 reload，而不是等别人在留言里提醒。
 
 Tool 业务错误同时设置 `isError=true` 与 `structuredContent={code,message,details}`；`content` 只保留简短可读文本，因此 `VERSION_CONFLICT` 等调用方可以直接读取 structured details 做自纠正。MCP schema validation error 也返回 field-level reason、近似字段 suggestion、required selector group、example 与 `schema_version`。
 
