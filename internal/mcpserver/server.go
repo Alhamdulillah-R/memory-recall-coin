@@ -58,6 +58,7 @@ type PinMemoryInput struct {
 	NamespaceSequence *int64 `json:"namespace_sequence,omitempty"`
 	MemoryID          string `json:"memory_id"`
 	ExpectedVersion   int64  `json:"expected_version"`
+	Unpin             bool   `json:"unpin,omitempty" jsonschema:"clear the pinned flag instead of setting it; expiration is left unchanged"`
 	Reason            string `json:"reason,omitempty"`
 	Actor             string `json:"actor,omitempty"`
 	IdempotencyKey    string `json:"idempotency_key,omitempty"`
@@ -99,6 +100,7 @@ type MemoryReceipt struct {
 	Tags              []string               `json:"tags"`
 	ContentLength     int                    `json:"content_length"`
 	ExpiresAt         *time.Time             `json:"expires_at,omitempty"`
+	Pinned            bool                   `json:"pinned,omitempty"`
 	UpdatedAt         time.Time              `json:"updated_at"`
 	SupersedesID      string                 `json:"supersedes_id,omitempty"`
 	SimilarMemories   []domain.SimilarMemory `json:"similar_memories,omitempty"`
@@ -118,6 +120,7 @@ func newMemoryReceipt(memory domain.Memory) MemoryReceipt {
 		Tags:              memory.Tags,
 		ContentLength:     len([]rune(memory.Content)),
 		ExpiresAt:         memory.ExpiresAt,
+		Pinned:            memory.Pinned,
 		UpdatedAt:         memory.UpdatedAt,
 		SupersedesID:      memory.SupersedesID,
 		SimilarMemories:   memory.SimilarMemories,
@@ -162,7 +165,7 @@ func New(backend service.Backend, options Options) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "memory-recall-coin", Version: options.Version},
 		&mcp.ServerOptions{
-			Instructions: `Primary workflow: memory_put records durable knowledge, memory_recall performs opinionated recall across namespace roots (omit selectors to recall from every namespace), memory_search provides low-level retrieval controls, memory_list browses by filters with cursor pagination, and memory_get reads one exact ID or version. Reads accept an optional namespace path or stable namespace sequence; without one they search every namespace (namespace_match=all). Writes require an existing explicit namespace and never create namespaces implicitly. memory_put requires a summary: 1-3 sentences (max 500 chars) stating the conclusion and when it applies, written for a future agent deciding whether to open the full content; recall, search and list return summary alongside the query snippet. When you touch an older memory whose results show no summary, add one with memory_patch. Use namespace_create to create one node at a time; a child requires its direct parent to exist. namespace_match defaults to exact for low-level tools when a selector is given, while memory_recall defaults to subtree and all_devices. Use namespace_list without parent selectors to discover every top-level root (format=tree prints a paste-ready tree), or with exactly one of parent and parent_sequence to browse descendants. memory_put rejects near-duplicate titles or content in the same namespace with FAILED_PRECONDITION and lists the candidates; patch or supersede them, or pass allow_similar=true. Write tools return a compact receipt (id, version, status, similar_memories); use memory_get for full content. memory_patch append_content appends text without resending the whole content; memory_patch amend {anchor, replacement} corrects one passage in place so the first screen of a memory always states the current conclusion while memory_history keeps the superseded wording. Mark claims you inferred rather than measured with [inferred] in the content; a memory containing [inferred] cannot be verification_state=confirmed, and recall lists those lines as inferred_claims. Timestamps accept RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS. detail_level=index returns only ids, titles, tags and status. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths. The board (board_post, board_counts, board_read, board_reply, board_resolve) is a public notice board for agents in other sessions: tag threads with the namespaces they concern, ignore threads outside your own responsibility, and always close a thread with board_resolve, promoting a durable conclusion to a memory, so the board never degrades into a log.`,
+			Instructions: `Primary workflow: memory_put records durable knowledge, memory_recall performs opinionated recall across namespace roots (omit selectors to recall from every namespace), memory_search provides low-level retrieval controls, memory_list browses by filters with cursor pagination, and memory_get reads one exact ID or version. Reads accept an optional namespace path or stable namespace sequence; without one they search every namespace (namespace_match=all). Writes require an existing explicit namespace and never create namespaces implicitly. memory_put requires a summary: 1-3 sentences (max 500 chars) stating the conclusion and when it applies, written for a future agent deciding whether to open the full content; recall, search and list return summary alongside the query snippet. When you touch an older memory whose results show no summary, add one with memory_patch. Use namespace_create to create one node at a time; a child requires its direct parent to exist. namespace_match defaults to exact for low-level tools when a selector is given, while memory_recall defaults to subtree and all_devices. Use namespace_list without parent selectors to discover every top-level root (format=tree prints a paste-ready tree), or with exactly one of parent and parent_sequence to browse descendants. memory_put rejects near-duplicate titles or content in the same namespace with FAILED_PRECONDITION and lists the candidates; patch or supersede them, or pass allow_similar=true. Write tools return a compact receipt (id, version, status, pinned, similar_memories); use memory_get for full content. To flag a memory as important use memory_pin or pinned=true on memory_put/memory_patch, never title prefixes or ad-hoc tags; pinned memories carry pinned=true in every result, rank above unpinned peers at similar relevance, and memory_search/memory_list accept pinned_only=true. memory_patch append_content appends text without resending the whole content; memory_patch amend {anchor, replacement} corrects one passage in place so the first screen of a memory always states the current conclusion while memory_history keeps the superseded wording. Mark claims you inferred rather than measured with [inferred] in the content; a memory containing [inferred] cannot be verification_state=confirmed, and recall lists those lines as inferred_claims. Timestamps accept RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS. detail_level=index returns only ids, titles, tags and status. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths. The board (board_post, board_counts, board_read, board_reply, board_resolve) is a public notice board for agents in other sessions: tag threads with the namespaces they concern, ignore threads outside your own responsibility, and always close a thread with board_resolve, promoting a durable conclusion to a memory, so the board never degrades into a log. Posting does not wake anyone by itself: a session sees new threads through its SessionStart board counts or through the board wait hook (memory-recall-coin board wait) if it has one, so poll message_count or updated_at with board_read instead of sleeping for a reply. When a tool result carries a notice that the plugin binary changed on disk, call plugin_reload before continuing.`,
 			Logger:       logger,
 			PageSize:     100,
 		},
@@ -190,7 +193,7 @@ func addTools(server *mcp.Server, handlers *Handlers) {
 	addTypedTool(server, catalog, tool("memory_supersede", "Atomically create a replacement memory and supersede the target.", false, true, false), handlers.supersedeMemory)
 	addTypedTool(server, catalog, tool("memory_refute", "Mark a memory refuted and optionally link a refuting memory with evidence.", false, true, true), handlers.refuteMemory)
 	addTypedTool(server, catalog, tool("memory_touch", "Extend, set or clear a memory TTL using optimistic concurrency.", false, true, false), handlers.touchMemory)
-	addTypedTool(server, catalog, tool("memory_pin", "Clear a memory expiration and preserve the TTL change in history.", false, true, false), handlers.pinMemory)
+	addTypedTool(server, catalog, tool("memory_pin", "Mark a memory as important: sets the first-class pinned flag (shown in every result, ranked above unpinned peers at similar relevance, filterable with pinned_only) and clears its expiration; unpin=true reverses the flag.", false, true, false), handlers.pinMemory)
 	addTypedTool(server, catalog, tool("memory_ingest_path", "Scan, hash, upload and optionally watch a local file or directory incrementally.", false, true, false), handlers.ingestPath)
 	addTypedTool(server, catalog, tool("memory_ingest_status", "Read source and embedding state for one ingestion job.", true, true, false), handlers.ingestionStatus)
 	addTypedTool(server, catalog, tool("memory_source_status", "Read source state. Requires a namespace selector plus at least one of source_id, path, or ingestion_id; path is canonical and scope_mode is unsupported.", true, true, false), handlers.sourceStatus)
@@ -207,7 +210,7 @@ func addTools(server *mcp.Server, handlers *Handlers) {
 	addTypedTool(server, catalog, tool("board_read", "Read board threads with their messages, filtered by namespace tags; unresolved only by default.", true, true, false), handlers.boardRead)
 	addTypedTool(server, catalog, tool("board_reply", "Add a message to an open board thread.", false, false, false), handlers.boardReply)
 	addTypedTool(server, catalog, tool("board_resolve", "Close a board thread with a resolution, optionally promoting the conclusion to a memory in the same call.", false, true, false), handlers.boardResolve)
-	server.AddReceivingMiddleware(validationErrorMiddleware(catalog))
+	server.AddReceivingMiddleware(validationErrorMiddleware(catalog), staleBinaryMiddleware(newBinaryWatch()))
 }
 
 func addTypedTool[Input, Output any](
@@ -1018,7 +1021,8 @@ func (h *Handlers) pinMemory(ctx context.Context, _ *mcp.CallToolRequest, input 
 		NamespaceSequence: input.NamespaceSequence,
 		ID:                input.MemoryID,
 		ExpectedVersion:   input.ExpectedVersion,
-		Pin:               true,
+		Pin:               !input.Unpin,
+		Unpin:             input.Unpin,
 		Reason:            input.Reason,
 		Actor:             input.Actor,
 		IdempotencyKey:    input.IdempotencyKey,

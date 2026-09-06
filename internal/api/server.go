@@ -189,6 +189,8 @@ func (s *Server) dispatch(ctx context.Context, request incomingRPCRequest) (any,
 		return dispatchInput(ctx, request, s.backend.ReadBoard)
 	case "board_resolve":
 		return dispatchInput(ctx, request, s.backend.ResolveBoardThread)
+	case "board_wait":
+		return dispatchInput(ctx, request, s.backend.WaitBoard)
 	case "memory_health":
 		return s.backend.Health(ctx)
 	default:
@@ -274,6 +276,8 @@ func applyCaller(input any, caller domain.CallerIdentity) {
 		if value.PromoteToMemory != nil {
 			value.PromoteToMemory.Caller = caller
 		}
+	case *service.BoardWaitInput:
+		value.Caller = caller
 	}
 }
 

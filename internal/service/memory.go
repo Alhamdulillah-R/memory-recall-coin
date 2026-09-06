@@ -22,7 +22,7 @@ const memoryColumns = `
     memory_type, title, coalesce(summary, ''), content, metadata, tags, lifecycle_status, verification_state,
     confidence, evidence, coalesce(source_id, ''), coalesce(source_path, ''),
     coalesce(source_hash, ''), source_range, expires_at, version,
-    coalesce(supersedes_id, ''), created_by, updated_by, created_at, updated_at, observed_at
+    coalesce(supersedes_id, ''), created_by, updated_by, created_at, updated_at, observed_at, pinned
 `
 
 type rowScanner interface {
@@ -59,6 +59,7 @@ type memorySnapshot struct {
 	CreatedAt         time.Time       `json:"created_at"`
 	UpdatedAt         time.Time       `json:"updated_at"`
 	ObservedAt        *time.Time      `json:"observed_at"`
+	Pinned            bool            `json:"pinned"`
 }
 
 /**
@@ -239,12 +240,12 @@ func (s *Store) insertMemoryTx(
             id, namespace, scope_type, scope_id, device_code, installation_code, workspace_code,
             memory_type, title, content, metadata, tags, verification_state, confidence, evidence,
             source_id, source_path, source_hash, source_range, observed_at, expires_at,
-            supersedes_id, created_by, updated_by, summary
+            supersedes_id, created_by, updated_by, summary, pinned
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12, $13, $14, $15,
             $16, $17, $18, $19, $20, $21,
-            $22, $23, $23, $24
+            $22, $23, $23, $24, $25
         )
         RETURNING `+memoryColumns,
 		input.ID,
@@ -271,6 +272,7 @@ func (s *Store) insertMemoryTx(
 		nullableString(input.SupersedesID),
 		input.CreatedBy,
 		input.Summary,
+		input.Pinned,
 	)
 
 	memory, err := scanMemory(row)
@@ -431,6 +433,9 @@ func (s *Store) PatchMemory(ctx context.Context, input PatchMemoryInput) (domain
 	}
 	if input.ObservedAt != nil {
 		add("observed_at = $%d", input.ObservedAt.TimeValue())
+	}
+	if input.Pinned != nil {
+		add("pinned = $%d", *input.Pinned)
 	}
 	if input.ClearExpiresAt {
 		if input.TTLSeconds != nil || input.ExpiresAt != nil {
@@ -781,7 +786,7 @@ func (s *Store) RestoreMemory(ctx context.Context, input RestoreMemoryInput) (do
             evidence = $14, source_id = $15, source_path = $16, source_hash = $17,
             source_range = $18, observed_at = $19, expires_at = $20,
             supersedes_id = $21, version = version + 1, updated_by = $22,
-			summary = $23,
+			summary = $23, pinned = $24,
 			updated_at = statement_timestamp(), embedding = NULL,
 			embedding_model = NULL, embedded_at = NULL,
 			deleted_at = CASE WHEN $11 = 'deleted' THEN statement_timestamp() ELSE NULL END
@@ -810,6 +815,7 @@ func (s *Store) RestoreMemory(ctx context.Context, input RestoreMemoryInput) (do
 		nullableString(snapshot.SupersedesID),
 		actor,
 		nullableString(snapshot.Summary),
+		snapshot.Pinned,
 	))
 	if errorsIsNoRows(err) {
 		return domain.Memory{}, s.versionConflict(ctx, tx, input.Namespace, input.ID, input.ExpectedVersion)
@@ -1087,8 +1093,11 @@ func (s *Store) TouchMemory(ctx context.Context, input TouchMemoryInput) (domain
 	if input.Pin {
 		selected++
 	}
+	if input.Unpin {
+		selected++
+	}
 	if selected != 1 {
-		return domain.Memory{}, NewError(CodeInvalidArgument, "choose exactly one of extend_by_seconds, expires_at, or pin")
+		return domain.Memory{}, NewError(CodeInvalidArgument, "choose exactly one of extend_by_seconds, expires_at, pin, or unpin")
 	}
 	if input.ExtendBySeconds != nil && *input.ExtendBySeconds <= 0 {
 		return domain.Memory{}, NewError(CodeInvalidArgument, "extend_by_seconds must be positive")
@@ -1129,7 +1138,11 @@ func (s *Store) TouchMemory(ctx context.Context, input TouchMemoryInput) (domain
 	expression := "expires_at = $5"
 	args := []any{input.Namespace, input.ID, input.ExpectedVersion, actor, input.ExpiresAt.TimeValue()}
 	if input.Pin {
-		expression = "expires_at = NULL"
+		expression = "expires_at = NULL, pinned = true"
+		args = args[:4]
+	}
+	if input.Unpin {
+		expression = "pinned = false"
 		args = args[:4]
 	}
 	if input.ExtendBySeconds != nil {
@@ -1412,6 +1425,7 @@ func scanMemory(row rowScanner) (domain.Memory, error) {
 		&memory.CreatedAt,
 		&memory.UpdatedAt,
 		&memory.ObservedAt,
+		&memory.Pinned,
 	)
 
 	return memory, err
@@ -1453,6 +1467,7 @@ func decodeMemorySnapshot(data []byte) (domain.Memory, error) {
 		CreatedAt:         snapshot.CreatedAt,
 		UpdatedAt:         snapshot.UpdatedAt,
 		ObservedAt:        snapshot.ObservedAt,
+		Pinned:            snapshot.Pinned,
 	}, nil
 }
 

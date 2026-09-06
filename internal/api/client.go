@@ -506,6 +506,17 @@ func (c *Client) ResolveBoardThread(ctx context.Context, input service.BoardReso
 	return callRPC[domain.BoardResolveResult](ctx, c, "board_resolve", input, caller)
 }
 
+// WaitBoard forwards board_wait; the call blocks on the server up to timeout_seconds.
+func (c *Client) WaitBoard(ctx context.Context, input service.BoardWaitInput) (domain.BoardWaitResult, error) {
+	caller, err := c.caller(ctx, true)
+	if err != nil {
+		return domain.BoardWaitResult{}, err
+	}
+	input.Caller = caller
+
+	return callRPC[domain.BoardWaitResult](ctx, c, "board_wait", input, caller)
+}
+
 // Health forwards memory_health without requiring device registration.
 func (c *Client) Health(ctx context.Context) (service.HealthResult, error) {
 	return callRPC[service.HealthResult](ctx, c, "memory_health", struct{}{}, domain.CallerIdentity{})

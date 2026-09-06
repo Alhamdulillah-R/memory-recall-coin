@@ -176,7 +176,7 @@ codex mcp list
 
 也可以在 Codex/ChatGPT desktop 的 `/mcp` 面板检查连接。配置字段参考 [OpenAI 官方 MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
 
-## 32 个 MCP tools
+## 32 个 MCP tools（另有 `board` CLI 子命令）
 
 Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_recall` 跨显式 namespace roots 完成 opinionated recall，`memory_search` 提供底层检索控制，`memory_list` 无 query 浏览过滤结果，`namespace_list` 浏览 namespace tree，`memory_get` 按 ID/version 精确读取。其余 tools 用于 revision、lifecycle、source ingestion 和 device identity 等高级操作。
 
@@ -197,7 +197,7 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_recall` 
 | `memory_supersede` | 原子创建 replacement 并 supersede target memory |
 | `memory_refute` | 标记 memory 为 refuted，并附 reason、evidence 或 refuting memory |
 | `memory_touch` | 延长、替换或清除 TTL，使用 optimistic concurrency |
-| `memory_pin` | 清除 expiration，并把 TTL 变化写入 history |
+| `memory_pin` | 标记重要：设置一等 `pinned` 欄位并清除 expiration；`unpin=true` 反向 |
 | `memory_ingest_path` | 在本机扫描、hash、增量上传并可选 watch 文件或目录；仅 stdio bridge 可读取 path |
 | `memory_ingest_status` | 按 ingestion ID 查询 source 与 embedding 状态 |
 | `memory_source_status` | 在显式 namespace 下按 `source_id`、`path`、`ingestion_id` 至少一个 selector 查询 hash、generation、parser、TTL 和 embedding 状态；不接收 `scope_mode` |
@@ -235,7 +235,7 @@ namespace 是小写 slash-separated path，例如 `memory-recall-coin/android/an
 
 `memory_put` 会在同 namespace 的 active memory 中做 `pg_trgm` 相似度检查：标题完全相同、标题相似度 ≥ 0.7 或内容相似度 ≥ 0.75 视为近似重复，默认返回 `FAILED_PRECONDITION`，details 的 `similar_memories` 列出候选 id/title/version；应改用 `memory_patch`/`memory_supersede`，或明确传 `allow_similar=true` 写入。相似度 ≥ 0.45 但未达门槛的候选会随 receipt 的 `similar_memories` 一起返回，仅作提示。`memory_supersede` 的 replacement 不做此检查。
 
-写入类 tool（`memory_put`、`memory_patch`、`memory_supersede`、`memory_restore`、`memory_refute`、`memory_touch`、`memory_pin`、`memory_delete`）通过 MCP 返回 compact receipt：`id`、`namespace`、`version`、`status`、`title`、`tags`、`content_length`、`updated_at`、`similar_memories`，不回 echo 整段 content；需要完整内容用 `memory_get`。中央 RPC 仍返回完整 memory。`memory_patch` 的 `append_content` 与 `content` 互斥，会在现有内容后加一个空行再追加文本。
+写入类 tool（`memory_put`、`memory_patch`、`memory_supersede`、`memory_restore`、`memory_refute`、`memory_touch`、`memory_pin`、`memory_delete`）通过 MCP 返回 compact receipt：`id`、`namespace`、`version`、`status`、`title`、`tags`、`content_length`、`updated_at`、`pinned`、`similar_memories`，不回 echo 整段 content；需要完整内容用 `memory_get`。中央 RPC 仍返回完整 memory。`memory_patch` 的 `append_content` 与 `content` 互斥，会在现有内容后加一个空行再追加文本。
 
 namespace 不再随 memory/source 写入隐式创建。新节点必须先调用 `namespace_create`；root 可直接创建，child 只能在 direct parent 已存在且 active 时创建，因此 `x/y/z` 必须按 `x` → `x/y` → `x/y/z` 顺序建立。`namespace_list` 不传 `parent`/`parent_sequence`（或传 `parent=""`）时从全库顶层开始，返回所有 top-level roots；否则必须且只能传一个非空 `parent` path 或 `parent_sequence`。默认 `depth=1`、`limit=100`，response 的 `parent` 始终是解析后的 canonical path，每项返回持久 `sequence`、parent、child count、direct/subtree counts 和 status。全库遍历按返回的 `next_cursor` 继续分页，不依赖 workspace default 或内容推断。
 
@@ -300,17 +300,33 @@ substring channel 除了整句 ILIKE 之外加入 `word_similarity(query, search
 
 正文里用 `[inferred]` 标记推论而非实测的句子：含 `[inferred]` 的 memory 不能整条 `verification_state=confirmed`（`memory_put`/`memory_patch` 返回 `INVALID_ARGUMENT` 并列出这些行），`memory_search`/`memory_recall`/`memory_list` 以 `inferred_claims` 单独列出这些行。实测替换掉推论后用 `memory_patch` 的 `amend` 原地改：`{"amend":{"anchor":"<原文片段>","replacement":"<新文字>"}}`，anchor 必须在当前正文中恰好出现一次，被替换的段落留在 `memory_history`；`amend` 与 `content`、`append_content` 互斥。
 
+### pinned：标记重要
+
+`pinned` 是 memory 的一等布尔欄位，取代各 session 自己发明的「标题加 ★ 前缀 / tag 加 key-finding / metadata 塞 importance」慣例。`memory_put` 与 `memory_patch` 接受 `pinned`，`memory_pin` 设旗标并清 expiration（`unpin=true` 只清旗标），`memory_touch` 的 `pin`/`unpin` 同义。所有结果（search/recall/list/get、receipt、history snapshot、restore）都带 `pinned`；排序上 pinned 在相近相关度时加 0.03 boost（与 confirmed/evidence 的 quality boost 同量级，不会压过明显更相关的结果）；`memory_search`/`memory_list` 的 `pinned_only=true` 只回 pinned 的 memory（不含 source chunk）。
+
 `namespaces` 与 `namespace_sequences` 可以混用，总数最多 8 个；两者都不传时做一次全库 recall，`attempts` 里对应项标记 `all_namespaces=true`，response 的 `namespace_match` 为 `all`。带 selector 时 `memory_recall` 默认 `namespace_match=subtree`、`scope_mode=all_devices`，固定同时搜索 memory 与 source chunk，跨重叠 roots 去重后统一排序；每次 namespace lookup 的 resolved path、命中数、semantic 状态与耗时会放在 `attempts`。
 
 ### 公共板
 
 公共板给不同 session、不同 project 的 agent 交换信息：`board_post` 开 thread 时带 1–8 个已存在的 namespace 作为 `tags`，其他 agent 用 `board_counts` 看每个 tag 有几条未 resolve、用 `board_read` 按 tag 拉正文，`board_reply` 追留言。不做私聊、不做已读；thread 只有 `open`/`resolved` 两态，`resolved` 后不再收留言。每个 thread 必须用 `board_resolve` 收尾：`resolution` 必填（结论或明确写没有结论），有长期价值时带 `promote_to_memory`（完整的 `memory_put` 参数）在同一调用里把结论写成 memory，thread 记录 `resolved_memory_id`。这样板子不会退化成日志。
 
-建议在 Claude Code 的 `SessionStart` hook 里用 `mcp_tool` 调 `board_counts`，只让那一行计数进入 context，正文由 agent 按自己负责的 tag 主动去拉：
+`board_post` 本身不会唤醒任何人：板子是持久存储，谁来读谁看到。要让 idle 的 session 被叫醒，用 binary 自带的 `board` 子命令接 Claude Code hook：
+
+- `memory-recall-coin board counts`：印一行 `board: a 2 · b 1`，给 `SessionStart` 用；
+- `memory-recall-coin board wait [--tags a,b] [--max-wait 8h]`：long-poll 中央服务的 `board_wait` RPC（服务端每 2 秒查一次 `since` 之后更新过的 open thread，单次最多阻塞 50 秒），板上一有新活动就把摘要写到 stderr 并 **exit 2**；配合 `Stop` hook 的 `async` + `asyncRewake`，Claude Code 会在 exit 2 时把 stderr 当 system reminder 注入并重新拉起 idle 的 session（实测 headless 与 interactive 都能醒）。每次 Stop 都会再起一个 watcher，同一 `session_id`（从 hook stdin JSON 读）只保留一个（`$XDG_RUNTIME_DIR/memory-recall-coin/board-wait.<session>.pid`），父进程退出即静默结束，连续 15 分钟连不上中央服务则 exit 2 报错让 agent 知道 watcher 已死。
+
+这两个子命令沿用 `mcp` 模式的环境变量；token 除了 `MEMORY_API_TOKEN` / `MEMORY_API_TOKEN_FILE`，还会读 `identity.json` 旁边的 `api-token` 文件（`$XDG_CONFIG_HOME/memory-recall-coin/api-token`，Windows 为 `%AppData%\memory-recall-coin\api-token`），hook 里只需给 URL：
 
 ```json
-{"hooks":{"SessionStart":[{"matcher":"startup|resume","hooks":[{"type":"mcp_tool","server":"mcp-controller","tool":"memory-recall__board_counts","input":{},"timeout":20}]}]}}
+{"hooks":{
+  "SessionStart":[{"matcher":"startup|resume","hooks":[{"type":"command","command":"MEMORY_API_URL=http://coin.example:8080 /usr/local/bin/memory-recall-coin board counts","timeout":20}]}],
+  "Stop":[{"hooks":[{"type":"command","command":"MEMORY_API_URL=http://coin.example:8080 /usr/local/bin/memory-recall-coin board wait","async":true,"asyncRewake":true}]}]
+}}
 ```
+
+被叫醒的 agent 看到的只是指针（thread id、tags、留言数、最后一则的前 160 字），正文仍要自己 `board_read`；不归自己管的 tag 直接忽略即可。
+
+本地 stdio bridge 启动时记住自己 binary 的 mtime 与大小，之后磁盘上的文件被替换（升级）就在每个 tool 结果末尾追加一段 `notice: … call plugin_reload …` 文本，让还在跑旧进程的 session 自己发现该 reload，而不是等别人在留言里提醒。
 
 Tool 业务错误同时设置 `isError=true` 与 `structuredContent={code,message,details}`；`content` 只保留简短可读文本，因此 `VERSION_CONFLICT` 等调用方可以直接读取 structured details 做自纠正。MCP schema validation error 也返回 field-level reason、近似字段 suggestion、required selector group、example 与 `schema_version`。
 

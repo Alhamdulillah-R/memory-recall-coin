@@ -93,6 +93,7 @@ type Memory struct {
 	SourceHash        string          `json:"source_hash,omitempty"`
 	SourceRange       json.RawMessage `json:"source_range,omitempty"`
 	ExpiresAt         *time.Time      `json:"expires_at,omitempty"`
+	Pinned            bool            `json:"pinned,omitempty"`
 	Version           int64           `json:"version"`
 	SupersedesID      string          `json:"supersedes_id,omitempty"`
 	CreatedBy         string          `json:"created_by"`
@@ -238,6 +239,7 @@ type SearchResult struct {
 	SourceHash        string          `json:"source_hash,omitempty"`
 	SourceRange       json.RawMessage `json:"source_range,omitempty"`
 	ExpiresAt         *time.Time      `json:"expires_at,omitempty"`
+	Pinned            bool            `json:"pinned,omitempty"`
 	Version           int64           `json:"version"`
 	IsLocal           bool            `json:"is_local"`
 	InferredClaims    []string        `json:"inferred_claims,omitempty"`
@@ -284,6 +286,7 @@ type MemoryListItem struct {
 	SourceHash        string          `json:"source_hash,omitempty"`
 	SourceRange       json.RawMessage `json:"source_range,omitempty"`
 	ExpiresAt         *time.Time      `json:"expires_at,omitempty"`
+	Pinned            bool            `json:"pinned,omitempty"`
 	Version           int64           `json:"version"`
 	IsLocal           bool            `json:"is_local"`
 	InferredClaims    []string        `json:"inferred_claims,omitempty"`
@@ -329,6 +332,7 @@ func NewMemoryListResponse(response SearchResponse) MemoryListResponse {
 			SourceHash:        result.SourceHash,
 			SourceRange:       result.SourceRange,
 			ExpiresAt:         result.ExpiresAt,
+			Pinned:            result.Pinned,
 			Version:           result.Version,
 			IsLocal:           result.IsLocal,
 			InferredClaims:    result.InferredClaims,
@@ -438,6 +442,25 @@ type BoardThread struct {
 	CreatedAt        time.Time      `json:"created_at"`
 	UpdatedAt        time.Time      `json:"updated_at"`
 	Messages         []BoardMessage `json:"messages,omitempty"`
+}
+
+// BoardThreadHead 是 board_wait 回報的一條有新活動的 thread，只帶最後一則留言的摘要。
+type BoardThreadHead struct {
+	ID           string    `json:"id"`
+	Tags         []string  `json:"tags"`
+	MessageCount int       `json:"message_count"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	LastAuthor   string    `json:"last_author,omitempty"`
+	Preview      string    `json:"preview"`
+}
+
+// BoardWaitResult 是一次 long-poll 的結果；Changed=false 時 Now 給下一輪當 since。
+type BoardWaitResult struct {
+	Changed bool              `json:"changed"`
+	Since   time.Time         `json:"since"`
+	Now     time.Time         `json:"now"`
+	Threads []BoardThreadHead `json:"threads,omitempty"`
+	Line    string            `json:"line,omitempty"`
 }
 
 // BoardTagCount 是一個 tag 底下還沒 resolve 的 thread 數。

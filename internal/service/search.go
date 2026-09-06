@@ -19,11 +19,13 @@ import (
 )
 
 const (
-	rrfConstant        = 60.0
-	maxRRFScore        = (4.0 + 2.0 + 1.5 + 1.0) / (rrfConstant + 1.0)
-	qualityWeight      = 0.03
-	localityWeight     = 0.02
-	relevanceWeight    = 1 - qualityWeight - localityWeight
+	rrfConstant    = 60.0
+	maxRRFScore    = (4.0 + 2.0 + 1.5 + 1.0) / (rrfConstant + 1.0)
+	qualityWeight  = 0.03
+	localityWeight = 0.02
+	// pinned 只在相近相關度時把 memory 往前推，不能壓過明顯更相關的結果
+	pinnedWeight       = 0.03
+	relevanceWeight    = 1 - qualityWeight - localityWeight - pinnedWeight
 	maxEvidenceQuality = 3.0
 	searchDefaultLimit = 10
 	listDefaultLimit   = 25
@@ -463,7 +465,7 @@ func (s *Store) queryMemoryList(
 }
 
 func (s *Store) querySourceList(ctx context.Context, input SearchMemoryInput) ([]searchCandidate, error) {
-	if !sourceTypeAllowed(input.Types) || len(input.TagsAll) > 0 || len(input.TagsAny) > 0 {
+	if !sourceTypeAllowed(input.Types) || len(input.TagsAll) > 0 || len(input.TagsAny) > 0 || input.PinnedOnly {
 		return nil, nil
 	}
 
@@ -626,7 +628,7 @@ func (s *Store) queryMemoryTextChannel(ctx context.Context, input SearchMemoryIn
 }
 
 func (s *Store) querySourceTextChannel(ctx context.Context, input SearchMemoryInput, channel string) ([]searchCandidate, error) {
-	if !sourceTypeAllowed(input.Types) || len(input.TagsAll) > 0 || len(input.TagsAny) > 0 {
+	if !sourceTypeAllowed(input.Types) || len(input.TagsAll) > 0 || len(input.TagsAny) > 0 || input.PinnedOnly {
 		return nil, nil
 	}
 
@@ -711,7 +713,7 @@ func (s *Store) queryMemorySemantic(ctx context.Context, input SearchMemoryInput
 }
 
 func (s *Store) querySourceSemantic(ctx context.Context, input SearchMemoryInput, vector pgvector.Vector) ([]searchCandidate, error) {
-	if !sourceTypeAllowed(input.Types) || len(input.TagsAll) > 0 || len(input.TagsAny) > 0 {
+	if !sourceTypeAllowed(input.Types) || len(input.TagsAll) > 0 || len(input.TagsAny) > 0 || input.PinnedOnly {
 		return nil, nil
 	}
 
@@ -766,6 +768,9 @@ func buildMemoryFilters(input SearchMemoryInput, alias string, args []any) (stri
 	if len(input.Types) > 0 {
 		args = append(args, input.Types)
 		conditions = append(conditions, alias+".memory_type = ANY($"+fmt.Sprint(len(args))+"::text[])")
+	}
+	if input.PinnedOnly {
+		conditions = append(conditions, alias+".pinned")
 	}
 	if len(input.MetadataContains) > 0 {
 		metadata, err := json.Marshal(input.MetadataContains)
@@ -894,7 +899,7 @@ func memorySearchColumns(scoreExpression string) string {
         m.memory_type, m.title, coalesce(m.summary, ''), m.content, m.metadata, m.tags,
         m.lifecycle_status, m.verification_state, m.confidence, m.evidence,
         coalesce(m.source_path, ''), coalesce(m.source_hash, ''), m.source_range,
-        m.expires_at, m.version, m.updated_at,
+        m.expires_at, m.version, m.updated_at, m.pinned,
         (` + scoreExpression + `)::double precision AS channel_score`
 }
 
@@ -918,7 +923,7 @@ func sourceSearchColumns(scoreExpression string) string {
             'start_line', c.start_line, 'end_line', c.end_line,
             'start_char', c.start_char, 'end_char', c.end_char
         ) AS source_range,
-        s.expires_at, s.generation AS version, s.updated_at,
+        s.expires_at, s.generation AS version, s.updated_at, false AS pinned,
         (` + scoreExpression + `)::double precision AS channel_score`
 }
 
@@ -961,6 +966,7 @@ func scanSearchCandidates(rows rowsScanner, channel string) ([]searchCandidate, 
 			&result.ExpiresAt,
 			&result.Version,
 			&candidate.UpdatedAt,
+			&result.Pinned,
 			&channelScore,
 		); err != nil {
 			return nil, WrapError(CodeInternal, "scan "+channel+" search candidate", err)
@@ -1227,6 +1233,9 @@ func rankingBoost(result domain.SearchResult, scopeMode string) float64 {
 	boost := qualityWeight * clampScore(quality)
 	if scopeMode == domain.SearchPreferLocal {
 		boost += localityWeight * clampScore(result.Score.Locality/100.0)
+	}
+	if result.Pinned {
+		boost += pinnedWeight
 	}
 
 	return clampScore(boost)

@@ -110,8 +110,14 @@ func Load(mode string) (Config, error) {
 		RequestTimeout:            envDuration("MEMORY_REQUEST_TIMEOUT", 30*time.Second),
 		ShutdownTimeout:           envDuration("MEMORY_SHUTDOWN_TIMEOUT", 15*time.Second),
 	}
-	if cfg.APIToken == "" && (mode == "serve" || mode == "mcp") {
+	if cfg.APIToken == "" && (mode == "serve" || mode == "mcp" || mode == "board") {
 		cfg.APIToken, err = readSecretFile("MEMORY_API_TOKEN_FILE")
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	if cfg.APIToken == "" && (mode == "mcp" || mode == "board") {
+		cfg.APIToken, err = readDefaultTokenFile()
 		if err != nil {
 			return Config{}, err
 		}
@@ -156,12 +162,12 @@ func (c Config) Validate() error {
 		if c.ShutdownTimeout <= 0 {
 			return errors.New("MEMORY_SHUTDOWN_TIMEOUT must be positive")
 		}
-	case "mcp":
+	case "mcp", "board":
 		if c.APIURL == "" {
 			return errors.New("MEMORY_API_URL is required")
 		}
 		if c.APIToken == "" {
-			return errors.New("MEMORY_API_TOKEN is required")
+			return errors.New("MEMORY_API_TOKEN, MEMORY_API_TOKEN_FILE, or the api-token file next to identity.json is required")
 		}
 		if c.MaxFileBytes <= 0 {
 			return errors.New("MEMORY_MAX_FILE_BYTES must be positive")
@@ -245,6 +251,24 @@ func defaultIdentityFile() (string, error) {
 	}
 
 	return filepath.Join(configDirectory, "memory-recall-coin", "identity.json"), nil
+}
+
+// readDefaultTokenFile 讀 identity.json 旁邊的 api-token；hook 這類沒有 plugin env 的進程靠它拿 token。
+func readDefaultTokenFile() (string, error) {
+	configDirectory, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user config directory: %w", err)
+	}
+	path := filepath.Join(configDirectory, "memory-recall-coin", "api-token")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read default token file %s: %w", path, err)
+	}
+
+	return strings.TrimSpace(string(data)), nil
 }
 
 func envString(name, fallback string) string {

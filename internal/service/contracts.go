@@ -33,6 +33,7 @@ type PutMemoryInput struct {
 	TTLSeconds        *int64                `json:"ttl_seconds,omitempty" jsonschema:"relative TTL in seconds; mutually exclusive with expires_at"`
 	ExpiresAt         *domain.Timestamp     `json:"expires_at,omitempty" jsonschema:"RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS (UTC when no zone)"`
 	AllowSimilar      bool                  `json:"allow_similar,omitempty" jsonschema:"write even when an active memory in the same namespace has a near-duplicate title or content; default false rejects with FAILED_PRECONDITION and lists the candidates"`
+	Pinned            bool                  `json:"pinned,omitempty" jsonschema:"mark this memory as important: pinned is a first-class flag shown in every result, ranked above unpinned peers at similar relevance and filterable with pinned_only; prefer it over title prefixes or ad-hoc tags"`
 	CreatedBy         string                `json:"created_by,omitempty"`
 	IdempotencyKey    string                `json:"idempotency_key,omitempty" jsonschema:"stable key for safe write retry"`
 	Caller            domain.CallerIdentity `json:"-"`
@@ -63,6 +64,7 @@ type PatchMemoryInput struct {
 	TTLSeconds        *int64                `json:"ttl_seconds,omitempty"`
 	ExpiresAt         *domain.Timestamp     `json:"expires_at,omitempty" jsonschema:"RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS (UTC when no zone)"`
 	ClearExpiresAt    bool                  `json:"clear_expires_at,omitempty"`
+	Pinned            *bool                 `json:"pinned,omitempty" jsonschema:"set or clear the pinned importance flag; memory_pin does the same and also clears expiration"`
 	Reason            string                `json:"reason,omitempty"`
 	UpdatedBy         string                `json:"updated_by,omitempty"`
 	IdempotencyKey    string                `json:"idempotency_key,omitempty"`
@@ -116,6 +118,7 @@ type SearchMemoryInput struct {
 	IncludeDeleted    bool              `json:"include_deleted,omitempty"`
 	Limit             int               `json:"limit,omitempty" jsonschema:"maximum results from 1 to 100; default 10"`
 	LimitPerKind      bool              `json:"limit_per_kind,omitempty" jsonschema:"apply limit separately to memory and source_chunk results so curated memories are never crowded out by chunks"`
+	PinnedOnly        bool              `json:"pinned_only,omitempty" jsonschema:"only memories with the pinned flag; excludes source chunks"`
 	CandidateLimit    int               `json:"candidate_limit,omitempty" jsonschema:"per-channel candidate limit from 10 to 500; default 100"`
 	// 只有 list retrieval 用的 keyset cursor，由 ListMemoryInput 帶入
 	Cursor string                `json:"-"`
@@ -146,6 +149,7 @@ type ListMemoryInput struct {
 	IncludeDeleted    bool                  `json:"include_deleted,omitempty"`
 	Limit             int                   `json:"limit,omitempty" jsonschema:"page size from 1 to 100; default 25"`
 	Cursor            string                `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page; results are ordered by updated_at desc"`
+	PinnedOnly        bool                  `json:"pinned_only,omitempty" jsonschema:"only memories with the pinned flag"`
 	Caller            domain.CallerIdentity `json:"-"`
 }
 
@@ -177,6 +181,7 @@ func (input ListMemoryInput) SearchInput() SearchMemoryInput {
 		Limit:             input.Limit,
 		CandidateLimit:    input.Limit,
 		Cursor:            input.Cursor,
+		PinnedOnly:        input.PinnedOnly,
 		Caller:            input.Caller,
 	}
 }
@@ -284,7 +289,8 @@ type TouchMemoryInput struct {
 	ExpectedVersion   int64                 `json:"expected_version"`
 	ExtendBySeconds   *int64                `json:"extend_by_seconds,omitempty"`
 	ExpiresAt         *domain.Timestamp     `json:"expires_at,omitempty" jsonschema:"RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS (UTC when no zone)"`
-	Pin               bool                  `json:"pin,omitempty" jsonschema:"clear expiration when true"`
+	Pin               bool                  `json:"pin,omitempty" jsonschema:"set the pinned flag and clear expiration when true"`
+	Unpin             bool                  `json:"unpin,omitempty" jsonschema:"clear the pinned flag when true; expiration is left unchanged"`
 	Reason            string                `json:"reason,omitempty"`
 	Actor             string                `json:"actor,omitempty"`
 	IdempotencyKey    string                `json:"idempotency_key,omitempty"`
@@ -414,5 +420,6 @@ type Backend interface {
 	BoardCounts(context.Context, BoardCountsInput) (domain.BoardCounts, error)
 	ReadBoard(context.Context, BoardReadInput) (domain.BoardReadResponse, error)
 	ResolveBoardThread(context.Context, BoardResolveInput) (domain.BoardResolveResult, error)
+	WaitBoard(context.Context, BoardWaitInput) (domain.BoardWaitResult, error)
 	Health(context.Context) (HealthResult, error)
 }

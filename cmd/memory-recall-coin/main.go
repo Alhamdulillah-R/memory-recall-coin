@@ -48,9 +48,24 @@ func main() {
 	}
 
 	if err := run(mode, logger); err != nil {
+		var exit *exitError
+		if errors.As(err, &exit) {
+			fmt.Fprintln(os.Stderr, exit.message)
+			os.Exit(exit.code)
+		}
 		logger.Error("[Error] memory-recall-coin stopped", "mode", mode, "error", err)
 		os.Exit(1)
 	}
+}
+
+// exitError 讓子命令決定自己的 exit code 與 stderr 內容；hook 靠 exit 2 喚醒 agent。
+type exitError struct {
+	code    int
+	message string
+}
+
+func (e *exitError) Error() string {
+	return e.message
 }
 
 func run(mode string, logger *slog.Logger) error {
@@ -71,8 +86,10 @@ func run(mode string, logger *slog.Logger) error {
 		return runLocalMCP(cfg, logger)
 	case "migrate":
 		return runMigrations(cfg)
+	case "board":
+		return runBoardCommand(cfg, os.Args[2:])
 	default:
-		return fmt.Errorf("usage: memory-recall-coin [mcp|serve|migrate|version]")
+		return fmt.Errorf("usage: memory-recall-coin [mcp|serve|migrate|board|version]")
 	}
 }
 
