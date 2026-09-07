@@ -99,7 +99,7 @@ func (s *Store) PostBoardThread(ctx context.Context, input BoardPostInput) (doma
 		return domain.BoardThread{}, err
 	}
 
-	thread, err := loadBoardThread(ctx, tx, threadID)
+	thread, err := loadBoardThread(ctx, tx, threadID, 1)
 	if err != nil {
 		return domain.BoardThread{}, err
 	}
@@ -143,7 +143,7 @@ func (s *Store) ReplyBoardThread(ctx context.Context, input BoardReplyInput) (do
 		return domain.BoardThread{}, err
 	}
 
-	thread, err := loadBoardThread(ctx, tx, input.ThreadID)
+	thread, err := loadBoardThread(ctx, tx, input.ThreadID, 1)
 	if err != nil {
 		return domain.BoardThread{}, err
 	}
@@ -321,7 +321,7 @@ func (s *Store) ResolveBoardThread(ctx context.Context, input BoardResolveInput)
 		return domain.BoardResolveResult{}, WrapError(CodeInternal, "resolve board thread", err)
 	}
 
-	thread, err := loadBoardThread(ctx, tx, input.ThreadID)
+	thread, err := loadBoardThread(ctx, tx, input.ThreadID, 1)
 	if err != nil {
 		return domain.BoardResolveResult{}, err
 	}
@@ -442,7 +442,11 @@ func lockBoardThread(ctx context.Context, tx pgx.Tx, threadID string) (string, e
 	return status, nil
 }
 
-func loadBoardThread(ctx context.Context, tx pgx.Tx, threadID string) (domain.BoardThread, error) {
+/**
+ * loadBoardThread 讀一條 thread；maxMessages 限制回傳的留言數（取最新的幾則），0 代表全部。
+ * 寫入路徑只要 receipt，不該把整條歷史搬回去，長 thread 會撐爆呼叫方。
+ */
+func loadBoardThread(ctx context.Context, tx pgx.Tx, threadID string, maxMessages int) (domain.BoardThread, error) {
 	rows, err := tx.Query(ctx, `SELECT `+boardThreadColumns+` FROM board_threads WHERE id = $1`, threadID)
 	if err != nil {
 		return domain.BoardThread{}, WrapError(CodeInternal, "load board thread", err)
@@ -457,10 +461,16 @@ func loadBoardThread(ctx context.Context, tx pgx.Tx, threadID string) (domain.Bo
 	thread := threads[0]
 
 	messageRows, err := tx.Query(ctx, `
-		SELECT id, thread_id, summary, body, coalesce(author, ''), created_by, created_by_session, created_at
-		FROM board_messages WHERE thread_id = $1
+		SELECT id, thread_id, summary, body, author, created_by, created_by_session, created_at
+		FROM (
+			SELECT id, thread_id, summary, body, coalesce(author, '') AS author,
+			       created_by, created_by_session, created_at
+			FROM board_messages WHERE thread_id = $1
+			ORDER BY created_at DESC, id DESC
+			LIMIT CASE WHEN $2 <= 0 THEN NULL ELSE $2 END
+		) newest
 		ORDER BY created_at, id
-	`, threadID)
+	`, threadID, maxMessages)
 	if err != nil {
 		return domain.BoardThread{}, WrapError(CodeInternal, "load board messages", err)
 	}
