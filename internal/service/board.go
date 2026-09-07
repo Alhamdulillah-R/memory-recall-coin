@@ -19,15 +19,17 @@ const (
 
 // BoardPostInput 開一個新 thread；tags 是這件事關係到的 namespace。
 type BoardPostInput struct {
-	Tags   []string              `json:"tags" jsonschema:"1 to 8 existing namespace paths this thread concerns; other agents filter the board by these"`
-	Body   string                `json:"body" jsonschema:"what you found, need, or are about to change; write for an agent in another session"`
-	Author string                `json:"author,omitempty" jsonschema:"free-form sender label such as the session or task name"`
-	Caller domain.CallerIdentity `json:"-"`
+	Tags    []string              `json:"tags" jsonschema:"1 to 8 existing namespace paths this thread concerns; other agents filter the board by these"`
+	Summary string                `json:"summary" jsonschema:"required 1-2 sentences naming what the reader must do or know; this is the whole message a woken agent sees, so put the ask here and never past the first sentence of body"`
+	Body    string                `json:"body" jsonschema:"the full detail; a woken agent sees only a truncated tail of this, so never put an instruction here that is not already in summary"`
+	Author  string                `json:"author,omitempty" jsonschema:"free-form sender label such as the session or task name"`
+	Caller  domain.CallerIdentity `json:"-"`
 }
 
 // BoardReplyInput 在既有 thread 下追一則留言。
 type BoardReplyInput struct {
 	ThreadID string                `json:"thread_id"`
+	Summary  string                `json:"summary" jsonschema:"required 1-2 sentences naming what the reader must do or know; this is the whole message a woken agent sees, so put the ask here and never past the first sentence of body"`
 	Body     string                `json:"body"`
 	Author   string                `json:"author,omitempty" jsonschema:"free-form sender label such as the session or task name"`
 	Caller   domain.CallerIdentity `json:"-"`
@@ -68,6 +70,10 @@ func (s *Store) PostBoardThread(ctx context.Context, input BoardPostInput) (doma
 	if err := requireNonEmpty("body", body); err != nil {
 		return domain.BoardThread{}, err
 	}
+	summary := strings.TrimSpace(input.Summary)
+	if err := validateSummary(summary); err != nil {
+		return domain.BoardThread{}, err
+	}
 	actor := normalizeActor("", input.Caller)
 	tx, err := s.beginMutation(ctx, actor, "board_post")
 	if err != nil {
@@ -87,7 +93,7 @@ func (s *Store) PostBoardThread(ctx context.Context, input BoardPostInput) (doma
 	`, threadID, tags, actor); err != nil {
 		return domain.BoardThread{}, WrapError(CodeInternal, "insert board thread", err)
 	}
-	if err := insertBoardMessage(ctx, tx, threadID, body, input.Author, actor, input.Caller); err != nil {
+	if err := insertBoardMessage(ctx, tx, threadID, summary, body, input.Author, actor, input.Caller); err != nil {
 		return domain.BoardThread{}, err
 	}
 
@@ -113,6 +119,10 @@ func (s *Store) ReplyBoardThread(ctx context.Context, input BoardReplyInput) (do
 	if err := requireNonEmpty("body", body); err != nil {
 		return domain.BoardThread{}, err
 	}
+	summary := strings.TrimSpace(input.Summary)
+	if err := validateSummary(summary); err != nil {
+		return domain.BoardThread{}, err
+	}
 	actor := normalizeActor("", input.Caller)
 	tx, err := s.beginMutation(ctx, actor, "board_reply")
 	if err != nil {
@@ -127,7 +137,7 @@ func (s *Store) ReplyBoardThread(ctx context.Context, input BoardReplyInput) (do
 	if status != "open" {
 		return domain.BoardThread{}, NewError(CodeFailedPrecondition, "thread is resolved; post a new thread instead")
 	}
-	if err := insertBoardMessage(ctx, tx, input.ThreadID, body, input.Author, actor, input.Caller); err != nil {
+	if err := insertBoardMessage(ctx, tx, input.ThreadID, summary, body, input.Author, actor, input.Caller); err != nil {
 		return domain.BoardThread{}, err
 	}
 
@@ -221,7 +231,7 @@ func (s *Store) ReadBoard(ctx context.Context, input BoardReadInput) (domain.Boa
 		indexes[thread.ID] = index
 	}
 	messageRows, err := s.pool.Query(ctx, `
-		SELECT id, thread_id, body, coalesce(author, ''), created_by, created_by_session, created_at
+		SELECT id, thread_id, summary, body, coalesce(author, ''), created_by, created_by_session, created_at
 		FROM board_messages
 		WHERE thread_id = ANY($1::text[])
 		ORDER BY created_at, id
@@ -235,6 +245,7 @@ func (s *Store) ReadBoard(ctx context.Context, input BoardReadInput) (domain.Boa
 		if err := messageRows.Scan(
 			&message.ID,
 			&message.ThreadID,
+			&message.Summary,
 			&message.Body,
 			&message.Author,
 			&message.CreatedBy,
@@ -375,17 +386,19 @@ func insertBoardMessage(
 	ctx context.Context,
 	tx pgx.Tx,
 	threadID string,
+	summary string,
 	body string,
 	author string,
 	actor string,
 	caller domain.CallerIdentity,
 ) error {
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO board_messages(id, thread_id, body, author, created_by, created_by_session, device_code, installation_code)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO board_messages(id, thread_id, summary, body, author, created_by, created_by_session, device_code, installation_code)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`,
 		NewID("msg"),
 		threadID,
+		summary,
 		body,
 		nullableString(author),
 		actor,
@@ -433,7 +446,7 @@ func loadBoardThread(ctx context.Context, tx pgx.Tx, threadID string) (domain.Bo
 	thread := threads[0]
 
 	messageRows, err := tx.Query(ctx, `
-		SELECT id, thread_id, body, coalesce(author, ''), created_by, created_by_session, created_at
+		SELECT id, thread_id, summary, body, coalesce(author, ''), created_by, created_by_session, created_at
 		FROM board_messages WHERE thread_id = $1
 		ORDER BY created_at, id
 	`, threadID)
@@ -446,6 +459,7 @@ func loadBoardThread(ctx context.Context, tx pgx.Tx, threadID string) (domain.Bo
 		if err := messageRows.Scan(
 			&message.ID,
 			&message.ThreadID,
+			&message.Summary,
 			&message.Body,
 			&message.Author,
 			&message.CreatedBy,

@@ -1,0 +1,1 @@
+ALTER TABLE board_messages ADD COLUMN IF NOT EXISTS summary text NOT NULL DEFAULT '';

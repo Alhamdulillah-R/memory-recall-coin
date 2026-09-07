@@ -103,10 +103,10 @@ func (s *Store) boardActivitySince(
 		tagFilter = " AND t.tags && $4::text[]"
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT t.id, t.tags, t.message_count, t.updated_at, coalesce(m.author, ''), m.body
+		SELECT t.id, t.tags, t.message_count, t.updated_at, coalesce(m.author, ''), m.summary, m.body
 		FROM board_threads t
 		JOIN LATERAL (
-			SELECT author, body FROM board_messages
+			SELECT author, summary, body FROM board_messages
 			WHERE thread_id = t.id AND created_at > $1
 			  AND ($3 = '' OR created_by_session IS DISTINCT FROM $3)
 			ORDER BY created_at DESC LIMIT 1
@@ -124,7 +124,15 @@ func (s *Store) boardActivitySince(
 	for rows.Next() {
 		var head domain.BoardThreadHead
 		var body string
-		if err := rows.Scan(&head.ID, &head.Tags, &head.MessageCount, &head.UpdatedAt, &head.LastAuthor, &body); err != nil {
+		if err := rows.Scan(
+			&head.ID,
+			&head.Tags,
+			&head.MessageCount,
+			&head.UpdatedAt,
+			&head.LastAuthor,
+			&head.Summary,
+			&body,
+		); err != nil {
 			return nil, WrapError(CodeInternal, "scan board activity", err)
 		}
 		head.Preview = previewText(body, boardWaitPreviewRunes)
@@ -170,14 +178,21 @@ func boardWaitLine(threads []domain.BoardThreadHead) string {
 		if author == "" {
 			author = "unknown"
 		}
+		headline := thread.Summary
+		if headline == "" {
+			headline = thread.Preview
+		}
 		lines = append(lines, fmt.Sprintf(
 			"board: %s [%s] %d msgs, last by %s: %s",
 			thread.ID,
 			strings.Join(thread.Tags, " "),
 			thread.MessageCount,
 			author,
-			thread.Preview,
+			headline,
 		))
+		if thread.Summary != "" && thread.Preview != "" {
+			lines = append(lines, "  body: "+thread.Preview)
+		}
 	}
 
 	return strings.Join(lines, "\n")

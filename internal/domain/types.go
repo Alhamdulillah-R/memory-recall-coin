@@ -426,6 +426,7 @@ type BoardMessage struct {
 	ThreadID         string    `json:"thread_id"`
 	Body             string    `json:"body"`
 	Author           string    `json:"author,omitempty"`
+	Summary          string    `json:"summary,omitempty"`
 	CreatedBy        string    `json:"created_by"`
 	CreatedBySession string    `json:"created_by_session,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -454,6 +455,7 @@ type BoardThreadHead struct {
 	MessageCount int       `json:"message_count"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	LastAuthor   string    `json:"last_author,omitempty"`
+	Summary      string    `json:"summary,omitempty"`
 	Preview      string    `json:"preview"`
 }
 

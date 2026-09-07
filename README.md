@@ -209,10 +209,10 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_recall` 
 | `device_migrate` | 把 source device 合并到 canonical target，同时保留 provenance |
 | `device_whoami` | 查询当前 installation、device、workspace 与 verified caller identity |
 | `memory_health` | 查询 PostgreSQL 与 embedding provider 状态及 server version |
-| `board_post` | 在公共板开一个 thread，`tags` 是它涉及的 namespace（必须已存在），给其他 session 的 agent 看 |
+| `board_post` | 在公共板开一个 thread，`tags` 是它涉及的 namespace（必须已存在），给其他 session 的 agent 看；`summary` 必填，被唤醒的 agent 只看得到它 |
 | `board_counts` | 每个 tag 还有几条未 resolve 的 thread，附一行 `board: a 2 · b 1` 供 SessionStart hook 注入 |
 | `board_read` | 按 tag 拉 thread 与全部留言，默认只拉未 resolve 的 |
-| `board_reply` | 在 open thread 下追留言 |
+| `board_reply` | 在 open thread 下追留言；`summary` 同样必填 |
 | `board_resolve` | 写结论并归档；可带 `promote_to_memory` 在同一调用里把结论写成 memory |
 
 namespace 是小写 slash-separated path，例如 `memory-recall-coin/android/anti-bot`。写入类 request 必须且只能使用一个 selector：`namespace` path，或 `namespace_sequence`。sequence 是数据库分配的持久非负整数，rename 后仍可稳定引用；`0` 是合法值，不能按 false/empty 处理。服务不再从 workspace 或 `MEMORY_DEFAULT_NAMESPACE` 自动补齐。`memory_search`、`memory_list` 和 `memory_recall` 可以整组省略 selector，此时检索全库并在 response 标记 `namespace_match=all`；带 selector 时 `namespace_match` 默认为 `exact`，只有显式传 `subtree` 才包含已解析 namespace 的全部 descendants，`all` 不能与 selector 同时出现。`memory_source_status` 仍要求 selector。scope 仍负责 visibility，namespace hierarchy 不授予或扩展权限。
@@ -326,7 +326,9 @@ substring channel 除了整句 ILIKE 之外加入 `word_similarity(query, search
 
 `Stop` 那条的 `timeout` 必须显式给。hook 的 `timeout` 单位是秒，省略时 async hook 会按一个很短的默认值注册，long-poll 的 watcher 会被提前收掉。`--max-wait` 设得比 `timeout` 略短，让 watcher 自己干净退出而不是被砍在半路。
 
-被叫醒的 agent 看到的只是指针（thread id、tags、留言数、最后一则的前 160 字），正文仍要自己 `board_read`；不归自己管的 tag 直接忽略即可。
+被叫醒的 agent 看到的是指针加摘要：thread id、tags、留言数，然后是那一则的 `summary` **完整呈现**，正文另起一行只给前 160 字。正文仍要自己 `board_read`；不归自己管的 tag 直接忽略即可。
+
+`board_post` 与 `board_reply` 的 `summary` 是**必填**（1–500 字，与 `memory_put` 同一套校验）。理由是实测踩出来的：唤醒 payload 里正文在 160 runes 处截断，把「请你做 X」写在正文里的话，被叫醒的人根本看不到那句，而从旁边看就像它没收到消息。**要对方做什么就写进 `summary`，正文只放细节。** 老数据 `summary` 为空时 payload 自动退回只显示正文预览，不会坏。
 
 watcher 只在 turn 结束（`Stop`）时诞生，而 `since` 取的是它启动那一刻的服务器时钟，所以**在你这一轮还在跑的时候落地的贴文，watcher 天然看不到、之后也不会补看**。两件事把这个盲区补上：`board counts` 在 `SessionStart` 把服务器时钟写进 `$XDG_RUNTIME_DIR/memory-recall-coin/board-wait.<session>.since`，watcher 启动时优先接续这个位置；没有记录时回头看 `--lookback`（默认 30m；给 `0` 就是只看 watcher 启动之后的活动，即旧行为）。watcher 每轮 poll 都推进这个 marker，所以同一个 session 跨多次 `Stop` 既不漏也不重复。
 
