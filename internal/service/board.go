@@ -39,7 +39,9 @@ type BoardReplyInput struct {
 type BoardReadInput struct {
 	Tags            []string              `json:"tags,omitempty" jsonschema:"only threads carrying any of these namespace tags; empty reads every tag"`
 	IncludeResolved bool                  `json:"include_resolved,omitempty"`
-	Since           *domain.Timestamp     `json:"since,omitempty" jsonschema:"only threads updated at or after this time; RFC3339 or YYYY-MM-DD"`
+	Since           *domain.Timestamp     `json:"since,omitempty" jsonschema:"only threads updated at or after this time; this selects threads, it does not trim their messages, so use after_message_id to follow a long thread"`
+	AfterMessageID  string                `json:"after_message_id,omitempty" jsonschema:"return only messages created after this message id; the usual way to follow a long thread without re-reading it, pass the last id you saw"`
+	MaxMessages     int                   `json:"max_messages,omitempty" jsonschema:"keep at most this many newest messages per thread, 1 to 200; 0 returns every message and can be large on long threads"`
 	Limit           int                   `json:"limit,omitempty" jsonschema:"maximum threads from 1 to 100; default 20"`
 	Caller          domain.CallerIdentity `json:"-"`
 }
@@ -189,6 +191,9 @@ func (s *Store) BoardCounts(ctx context.Context, _ BoardCountsInput) (domain.Boa
  * ReadBoard 拉 thread 與完整留言，按最近活動排序。
  */
 func (s *Store) ReadBoard(ctx context.Context, input BoardReadInput) (domain.BoardReadResponse, error) {
+	if input.MaxMessages < 0 || input.MaxMessages > 200 {
+		return domain.BoardReadResponse{}, NewError(CodeInvalidArgument, "max_messages must be between 0 and 200")
+	}
 	if input.Limit <= 0 {
 		input.Limit = boardDefaultReadSize
 	}
@@ -231,11 +236,17 @@ func (s *Store) ReadBoard(ctx context.Context, input BoardReadInput) (domain.Boa
 		indexes[thread.ID] = index
 	}
 	messageRows, err := s.pool.Query(ctx, `
-		SELECT id, thread_id, summary, body, coalesce(author, ''), created_by, created_by_session, created_at
-		FROM board_messages
-		WHERE thread_id = ANY($1::text[])
+		SELECT id, thread_id, summary, body, author, created_by, created_by_session, created_at
+		FROM (
+			SELECT id, thread_id, summary, body, coalesce(author, '') AS author,
+			       created_by, created_by_session, created_at,
+			       row_number() OVER (PARTITION BY thread_id ORDER BY created_at DESC, id DESC) AS rn
+			FROM board_messages
+			WHERE thread_id = ANY($1::text[]) AND ($2 = '' OR id > $2)
+		) ranked
+		WHERE $3 = 0 OR rn <= $3
 		ORDER BY created_at, id
-	`, threadIDs)
+	`, threadIDs, input.AfterMessageID, input.MaxMessages)
 	if err != nil {
 		return domain.BoardReadResponse{}, WrapError(CodeInternal, "read board messages", err)
 	}

@@ -211,7 +211,7 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_recall` 
 | `memory_health` | 查询 PostgreSQL 与 embedding provider 状态及 server version |
 | `board_post` | 在公共板开一个 thread，`tags` 是它涉及的 namespace（必须已存在），给其他 session 的 agent 看；`summary` 必填，被唤醒的 agent 只看得到它 |
 | `board_counts` | 每个 tag 还有几条未 resolve 的 thread，附一行 `board: a 2 · b 1` 供 SessionStart hook 注入 |
-| `board_read` | 按 tag 拉 thread 与全部留言，默认只拉未 resolve 的 |
+| `board_read` | 按 tag 拉 thread 与留言，默认只拉未 resolve 的；长 thread 用 `after_message_id` 增量读，或 `max_messages` 只取最新几则 |
 | `board_reply` | 在 open thread 下追留言；`summary` 同样必填 |
 | `board_resolve` | 写结论并归档；可带 `promote_to_memory` 在同一调用里把结论写成 memory |
 
@@ -309,6 +309,8 @@ substring channel 除了整句 ILIKE 之外加入 `word_similarity(query, search
 ### 公共板（敲敲）
 
 公共板给不同 session、不同 project 的 agent 交换信息：`board_post` 开 thread 时带 1–8 个已存在的 namespace 作为 `tags`，其他 agent 用 `board_counts` 看每个 tag 有几条未 resolve、用 `board_read` 按 tag 拉正文，`board_reply` 追留言。不做私聊、不做已读；thread 只有 `open`/`resolved` 两态，`resolved` 后不再收留言。每个 thread 必须用 `board_resolve` 收尾：`resolution` 必填（结论或明确写没有结论），有长期价值时带 `promote_to_memory`（完整的 `memory_put` 参数）在同一调用里把结论写成 memory，thread 记录 `resolved_memory_id`。这样板子不会退化成日志。
+
+长 thread 要用增量读。`since` 过滤的是 thread 的 `updated_at`，**不会**裁剪它的留言，所以拿它想「只看新的那几则」是无效的；一条十几则的 thread 每次都会把全部正文吐回来，实测五万字元以上，够撑爆一次 tool 调用。跟进一条 thread 时传 `after_message_id`（你上次看到的最后一个 id），只回它之后的留言；第一次读或者只想看结论时用 `max_messages`（1–200）只取每条 thread 最新的几则。两个可以并用。`message_count` 始终是全量计数，跟返回的留言数一比就知道省掉了多少。
 
 `board_post` 本身不会唤醒任何人：板子是持久存储，谁来读谁看到。要让 idle 的 session 被叫醒，用 binary 自带的 `board` 子命令接 Claude Code hook：
 

@@ -208,7 +208,7 @@ func addTools(server *mcp.Server, handlers *Handlers) {
 	// 公共板這組工具的中文名是「敲敲」：敲敲留言、敲敲傳訊息來了。
 	addTypedTool(server, catalog, tool("board_post", "Open a public board thread tagged with the namespaces it concerns, for agents in other sessions to pick up.", false, false, false), handlers.boardPost)
 	addTypedTool(server, catalog, tool("board_counts", "One-line count of open board threads per namespace tag; cheap enough to call at session start.", true, true, false), handlers.boardCounts)
-	addTypedTool(server, catalog, tool("board_read", "Read board threads with their messages, filtered by namespace tags; unresolved only by default.", true, true, false), handlers.boardRead)
+	addTypedTool(server, catalog, tool("board_read", "Read board threads with their messages, filtered by namespace tags; unresolved only by default. On a long thread pass after_message_id with the last id you saw, or max_messages, so the reply stays small.", true, true, false), handlers.boardRead)
 	addTypedTool(server, catalog, tool("board_reply", "Add a message to an open board thread.", false, false, false), handlers.boardReply)
 	addTypedTool(server, catalog, tool("board_resolve", "Close a board thread with a resolution, optionally promoting the conclusion to a memory in the same call.", false, true, false), handlers.boardResolve)
 	server.AddReceivingMiddleware(validationErrorMiddleware(catalog), staleBinaryMiddleware(newBinaryWatch()))
