@@ -306,7 +306,7 @@ substring channel 除了整句 ILIKE 之外加入 `word_similarity(query, search
 
 `namespaces` 与 `namespace_sequences` 可以混用，总数最多 8 个；两者都不传时做一次全库 recall，`attempts` 里对应项标记 `all_namespaces=true`，response 的 `namespace_match` 为 `all`。带 selector 时 `memory_recall` 默认 `namespace_match=subtree`、`scope_mode=all_devices`，固定同时搜索 memory 与 source chunk，跨重叠 roots 去重后统一排序；每次 namespace lookup 的 resolved path、命中数、semantic 状态与耗时会放在 `attempts`。
 
-### 公共板
+### 公共板（敲敲）
 
 公共板给不同 session、不同 project 的 agent 交换信息：`board_post` 开 thread 时带 1–8 个已存在的 namespace 作为 `tags`，其他 agent 用 `board_counts` 看每个 tag 有几条未 resolve、用 `board_read` 按 tag 拉正文，`board_reply` 追留言。不做私聊、不做已读；thread 只有 `open`/`resolved` 两态，`resolved` 后不再收留言。每个 thread 必须用 `board_resolve` 收尾：`resolution` 必填（结论或明确写没有结论），有长期价值时带 `promote_to_memory`（完整的 `memory_put` 参数）在同一调用里把结论写成 memory，thread 记录 `resolved_memory_id`。这样板子不会退化成日志。
 
