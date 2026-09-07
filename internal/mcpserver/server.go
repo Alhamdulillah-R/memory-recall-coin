@@ -18,6 +18,9 @@ import (
 	"github.com/Alhamdulillah-R/memory-recall-coin/internal/service"
 )
 
+// summaryMaxRunes 與 service.validateSummary 的上限一致，兩邊要一起改。
+const summaryMaxRunes = 500
+
 var boolTrue = true
 var boolFalse = false
 
@@ -165,7 +168,7 @@ func New(backend service.Backend, options Options) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "memory-recall-coin", Version: options.Version},
 		&mcp.ServerOptions{
-			Instructions: `Primary workflow: memory_put records durable knowledge, memory_recall performs opinionated recall across namespace roots (omit selectors to recall from every namespace), memory_search provides low-level retrieval controls, memory_list browses by filters with cursor pagination, and memory_get reads one exact ID or version. Reads accept an optional namespace path or stable namespace sequence; without one they search every namespace (namespace_match=all). Writes require an existing explicit namespace and never create namespaces implicitly. memory_put requires a summary: 1-3 sentences (max 500 chars) stating the conclusion and when it applies, written for a future agent deciding whether to open the full content; recall, search and list return summary alongside the query snippet. When you touch an older memory whose results show no summary, add one with memory_patch. Use namespace_create to create one node at a time; a child requires its direct parent to exist. namespace_match defaults to exact for low-level tools when a selector is given, while memory_recall defaults to subtree and all_devices. Use namespace_list without parent selectors to discover every top-level root (format=tree prints a paste-ready tree), or with exactly one of parent and parent_sequence to browse descendants. memory_put rejects near-duplicate titles or content in the same namespace with FAILED_PRECONDITION and lists the candidates; patch or supersede them, or pass allow_similar=true. Write tools return a compact receipt (id, version, status, pinned, similar_memories); use memory_get for full content. To flag a memory as important use memory_pin or pinned=true on memory_put/memory_patch, never title prefixes or ad-hoc tags; pinned memories carry pinned=true in every result, rank above unpinned peers at similar relevance, and memory_search/memory_list accept pinned_only=true. memory_patch append_content appends text without resending the whole content; memory_patch amend {anchor, replacement} corrects one passage in place so the first screen of a memory always states the current conclusion while memory_history keeps the superseded wording. Mark claims you inferred rather than measured with [inferred] in the content; a memory containing [inferred] cannot be verification_state=confirmed, and recall lists those lines as inferred_claims. Timestamps accept RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS. detail_level=index returns only ids, titles, tags and status. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths. The board (board_post, board_counts, board_read, board_reply, board_resolve), called 敲敲 in Chinese, is a public notice board for agents in other sessions: tag threads with the namespaces they concern, ignore threads outside your own responsibility, and always close a thread with board_resolve, promoting a durable conclusion to a memory, so the board never degrades into a log. Posting does not wake anyone by itself: a session sees new threads through its SessionStart board counts or through the board wait hook (memory-recall-coin board wait) if it has one, so poll message_count or updated_at with board_read instead of sleeping for a reply. board_post, board_reply and board_resolve return only the newest message rather than the whole thread, the same receipt rule the memory write tools follow; read a long thread with board_read using after_message_id or max_messages. When a tool result carries a notice that the plugin binary changed on disk, call plugin_reload before continuing.`,
+			Instructions: `Primary workflow: memory_put records durable knowledge, memory_recall performs opinionated recall across namespace roots (omit selectors to recall from every namespace), memory_search provides low-level retrieval controls, memory_list browses by filters with cursor pagination, and memory_get reads one exact ID or version. Reads accept an optional namespace path or stable namespace sequence; without one they search every namespace (namespace_match=all). Writes require an existing explicit namespace and never create namespaces implicitly. memory_put requires a summary: 1-3 sentences (max 500 chars) stating the conclusion and when it applies, written for a future agent deciding whether to open the full content; recall, search and list return summary alongside the query snippet. When you touch an older memory whose results show no summary, add one with memory_patch. Use namespace_create to create one node at a time; a child requires its direct parent to exist. namespace_match defaults to exact for low-level tools when a selector is given, while memory_recall defaults to subtree and all_devices. Use namespace_list without parent selectors to discover every top-level root (format=tree prints a paste-ready tree), or with exactly one of parent and parent_sequence to browse descendants. memory_put rejects near-duplicate titles or content in the same namespace with FAILED_PRECONDITION and lists the candidates; patch or supersede them, or pass allow_similar=true. Write tools return a compact receipt (id, version, status, pinned, similar_memories); use memory_get for full content. To flag a memory as important use memory_pin or pinned=true on memory_put/memory_patch, never title prefixes or ad-hoc tags; pinned memories carry pinned=true in every result, rank above unpinned peers at similar relevance, and memory_search/memory_list accept pinned_only=true. memory_patch append_content appends text without resending the whole content; memory_patch amend {anchor, replacement} corrects one passage in place so the first screen of a memory always states the current conclusion while memory_history keeps the superseded wording. Mark claims you inferred rather than measured with [inferred] in the content; a memory containing [inferred] cannot be verification_state=confirmed, and recall lists those lines as inferred_claims. Timestamps accept RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS. detail_level=index returns only ids, titles, tags and status. namespace_delete defaults to dry_run=true; pass dry_run=false only after reviewing counts, and recursive=true only when the entire subtree must be removed. Prefer verified evidence and current versions. Use expected_version for every mutation, idempotency_key for safe retries, and memory_supersede or memory_refute instead of silently overwriting conclusions. memory_ingest_path reads paths on the local MCP device; the central service never reads client paths. The board (board_post, board_counts, board_read, board_reply, board_resolve), called 敲敲 in Chinese, is a public notice board for agents in other sessions: tag threads with the namespaces they concern, ignore threads outside your own responsibility, and always close a thread with board_resolve, promoting a durable conclusion to a memory, so the board never degrades into a log. Posting does not wake anyone by itself: a session sees new threads through its SessionStart board counts or through the board wait hook (memory-recall-coin board wait) if it has one, so poll message_count or updated_at with board_read instead of sleeping for a reply. board_reply and board_resolve accept expected_last_message_id, the id of the newest message you saw: pass it whenever your text depends on what was already said and the write is rejected with VERSION_CONFLICT if anything landed meanwhile, with the id to read from in the details. board_post, board_reply and board_resolve return only the newest message rather than the whole thread, the same receipt rule the memory write tools follow; read a long thread with board_read using after_message_id or max_messages. When a tool result carries a notice that the plugin binary changed on disk, call plugin_reload before continuing.`,
 			Logger:       logger,
 			PageSize:     100,
 		},
@@ -210,7 +213,7 @@ func addTools(server *mcp.Server, handlers *Handlers) {
 	addTypedTool(server, catalog, tool("board_counts", "One-line count of open board threads per namespace tag; cheap enough to call at session start.", true, true, false), handlers.boardCounts)
 	addTypedTool(server, catalog, tool("board_read", "Read board threads with their messages, filtered by namespace tags; unresolved only by default. On a long thread pass after_message_id with the last id you saw, or max_messages, so the reply stays small.", true, true, false), handlers.boardRead)
 	addTypedTool(server, catalog, tool("board_reply", "Add a message to an open board thread; the reply carries only the message you just added, with message_count for the full size.", false, false, false), handlers.boardReply)
-	addTypedTool(server, catalog, tool("board_resolve", "Close a board thread with a resolution, optionally promoting the conclusion to a memory in the same call.", false, true, false), handlers.boardResolve)
+	addTypedTool(server, catalog, tool("board_resolve", "Close a board thread with a resolution, optionally promoting the conclusion to a memory in the same call; pass expected_last_message_id so a reply that landed while you were writing cannot be closed over.", false, true, false), handlers.boardResolve)
 	server.AddReceivingMiddleware(validationErrorMiddleware(catalog), staleBinaryMiddleware(newBinaryWatch()))
 }
 
@@ -483,6 +486,7 @@ func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
 	setArrayPropertyEnum(schema, "kinds", []string{"memory", "source_chunk"})
 	setNumericPropertyRange(schema, "confidence", 0, 1)
 	setNumericPropertyRange(schema, "min_relevance", 0, 1)
+	setStringPropertyMaxLength(schema, "summary", summaryMaxRunes)
 
 	switch toolName {
 	case "memory_search":
@@ -500,6 +504,7 @@ func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
 		setNumericPropertyRange(schema, "limit", 1, 200)
 	case "board_read":
 		setNumericPropertyRange(schema, "limit", 1, 100)
+		setNumericPropertyRange(schema, "max_messages", 0, 200)
 	}
 	if toolName == "board_post" || toolName == "board_read" {
 		setArrayPropertyNamespacePattern(schema, "tags")
@@ -685,6 +690,15 @@ func setArrayPropertyBounds(schema *jsonschema.Schema, propertyName string, minI
 		property.MinItems = &minItems
 		property.MaxItems = &maxItems
 		property.UniqueItems = true
+	})
+}
+
+// setStringPropertyMaxLength 讓 client 在送出前就擋掉超長欄位，而不是整包送到才被服務端退。
+func setStringPropertyMaxLength(schema *jsonschema.Schema, propertyName string, maxLength int) {
+	walkSchema(schema, func(current *jsonschema.Schema) {
+		if property, exists := current.Properties[propertyName]; exists {
+			property.MaxLength = &maxLength
+		}
 	})
 }
 

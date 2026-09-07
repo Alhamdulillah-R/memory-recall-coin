@@ -28,11 +28,12 @@ type BoardPostInput struct {
 
 // BoardReplyInput 在既有 thread 下追一則留言。
 type BoardReplyInput struct {
-	ThreadID string                `json:"thread_id"`
-	Summary  string                `json:"summary" jsonschema:"required 1-2 sentences naming what the reader must do or know; this is the whole message a woken agent sees, so put the ask here and never past the first sentence of body"`
-	Body     string                `json:"body"`
-	Author   string                `json:"author,omitempty" jsonschema:"free-form sender label such as the session or task name"`
-	Caller   domain.CallerIdentity `json:"-"`
+	ThreadID              string                `json:"thread_id"`
+	ExpectedLastMessageID string                `json:"expected_last_message_id,omitempty" jsonschema:"the id of the newest message you saw when you read this thread; the write is rejected if anything landed after it, so pass it whenever your text depends on what was already said"`
+	Summary               string                `json:"summary" jsonschema:"required 1-2 sentences naming what the reader must do or know; this is the whole message a woken agent sees, so put the ask here and never past the first sentence of body"`
+	Body                  string                `json:"body"`
+	Author                string                `json:"author,omitempty" jsonschema:"free-form sender label such as the session or task name"`
+	Caller                domain.CallerIdentity `json:"-"`
 }
 
 // BoardReadInput 拉 thread 正文；預設只拉還沒 resolve 的。
@@ -53,10 +54,11 @@ type BoardCountsInput struct {
 
 // BoardResolveInput 收掉一個 thread：寫結論，可以順手升格成 memory。
 type BoardResolveInput struct {
-	ThreadID        string                `json:"thread_id"`
-	Resolution      string                `json:"resolution" jsonschema:"one or two sentences: the conclusion, or an explicit statement that there was none"`
-	PromoteToMemory *PutMemoryInput       `json:"promote_to_memory,omitempty" jsonschema:"when the thread reached a durable conclusion, write it as a memory in the same call; namespace, title, summary and content required"`
-	Caller          domain.CallerIdentity `json:"-"`
+	ThreadID              string                `json:"thread_id"`
+	ExpectedLastMessageID string                `json:"expected_last_message_id,omitempty" jsonschema:"the id of the newest message you saw when you read this thread; the write is rejected if anything landed after it, so pass it whenever your text depends on what was already said"`
+	Resolution            string                `json:"resolution" jsonschema:"one or two sentences: the conclusion, or an explicit statement that there was none"`
+	PromoteToMemory       *PutMemoryInput       `json:"promote_to_memory,omitempty" jsonschema:"when the thread reached a durable conclusion, write it as a memory in the same call; namespace, title, summary and content required"`
+	Caller                domain.CallerIdentity `json:"-"`
 }
 
 const boardThreadColumns = `
@@ -138,6 +140,9 @@ func (s *Store) ReplyBoardThread(ctx context.Context, input BoardReplyInput) (do
 	}
 	if status != "open" {
 		return domain.BoardThread{}, NewError(CodeFailedPrecondition, "thread is resolved; post a new thread instead")
+	}
+	if err := assertLatestBoardMessage(ctx, tx, input.ThreadID, input.ExpectedLastMessageID); err != nil {
+		return domain.BoardThread{}, err
 	}
 	if err := insertBoardMessage(ctx, tx, input.ThreadID, summary, body, input.Author, actor, input.Caller); err != nil {
 		return domain.BoardThread{}, err
@@ -312,6 +317,9 @@ func (s *Store) ResolveBoardThread(ctx context.Context, input BoardResolveInput)
 	if status != "open" {
 		return domain.BoardResolveResult{}, NewError(CodeFailedPrecondition, "thread is already resolved")
 	}
+	if err := assertLatestBoardMessage(ctx, tx, input.ThreadID, input.ExpectedLastMessageID); err != nil {
+		return domain.BoardResolveResult{}, err
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE board_threads SET
 			status = 'resolved', resolution = $2, resolved_memory_id = $3,
@@ -427,6 +435,36 @@ func insertBoardMessage(
 	}
 
 	return nil
+}
+
+/**
+ * assertLatestBoardMessage 擋交叉發文；帶著你讀到的最後一則 id 進來，期間長出新留言就拒絕。
+ * 留言 id 是 ULID，字典序等於時間序，所以 max(id) 就是最新那則。
+ */
+func assertLatestBoardMessage(ctx context.Context, tx pgx.Tx, threadID string, expected string) error {
+	if expected == "" {
+		return nil
+	}
+	var actual string
+	var count int
+	if err := tx.QueryRow(ctx, `
+		SELECT coalesce(max(id), ''), count(*) FROM board_messages WHERE thread_id = $1
+	`, threadID).Scan(&actual, &count); err != nil {
+		return WrapError(CodeInternal, "read latest board message", err)
+	}
+	if actual == expected {
+		return nil
+	}
+
+	return &Error{
+		Code:    CodeConflict,
+		Message: "the thread grew since you read it; read what landed with board_read after_message_id=" + expected + " and decide whether your text still applies before writing again",
+		Details: map[string]any{
+			"expected_last_message_id": expected,
+			"actual_last_message_id":   actual,
+			"message_count":            count,
+		},
+	}
 }
 
 func lockBoardThread(ctx context.Context, tx pgx.Tx, threadID string) (string, error) {
