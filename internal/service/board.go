@@ -221,7 +221,7 @@ func (s *Store) ReadBoard(ctx context.Context, input BoardReadInput) (domain.Boa
 		indexes[thread.ID] = index
 	}
 	messageRows, err := s.pool.Query(ctx, `
-		SELECT id, thread_id, body, coalesce(author, ''), created_by, created_at
+		SELECT id, thread_id, body, coalesce(author, ''), created_by, created_by_session, created_at
 		FROM board_messages
 		WHERE thread_id = ANY($1::text[])
 		ORDER BY created_at, id
@@ -238,6 +238,7 @@ func (s *Store) ReadBoard(ctx context.Context, input BoardReadInput) (domain.Boa
 			&message.Body,
 			&message.Author,
 			&message.CreatedBy,
+			&message.CreatedBySession,
 			&message.CreatedAt,
 		); err != nil {
 			return domain.BoardReadResponse{}, WrapError(CodeInternal, "scan board message", err)
@@ -380,14 +381,15 @@ func insertBoardMessage(
 	caller domain.CallerIdentity,
 ) error {
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO board_messages(id, thread_id, body, author, created_by, device_code, installation_code)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO board_messages(id, thread_id, body, author, created_by, created_by_session, device_code, installation_code)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`,
 		NewID("msg"),
 		threadID,
 		body,
 		nullableString(author),
 		actor,
+		caller.SessionID,
 		nullableString(caller.DeviceCode),
 		nullableString(caller.InstallationCode),
 	); err != nil {
@@ -431,7 +433,7 @@ func loadBoardThread(ctx context.Context, tx pgx.Tx, threadID string) (domain.Bo
 	thread := threads[0]
 
 	messageRows, err := tx.Query(ctx, `
-		SELECT id, thread_id, body, coalesce(author, ''), created_by, created_at
+		SELECT id, thread_id, body, coalesce(author, ''), created_by, created_by_session, created_at
 		FROM board_messages WHERE thread_id = $1
 		ORDER BY created_at, id
 	`, threadID)
@@ -447,6 +449,7 @@ func loadBoardThread(ctx context.Context, tx pgx.Tx, threadID string) (domain.Bo
 			&message.Body,
 			&message.Author,
 			&message.CreatedBy,
+			&message.CreatedBySession,
 			&message.CreatedAt,
 		); err != nil {
 			return domain.BoardThread{}, WrapError(CodeInternal, "scan board message", err)

@@ -30,6 +30,7 @@ const (
 	boardWaitRetryCeiling     = time.Minute
 	boardWaitGiveUpAfter      = 15 * time.Minute
 	boardWaitWakeExitCode     = 2
+	boardWaitDefaultLookback  = 30 * time.Minute
 )
 
 // hookPayload 是 Claude Code 餵給 command hook 的 stdin JSON，只取需要的欄位。
@@ -57,6 +58,7 @@ func runBoardCommand(cfg config.Config, args []string) error {
 		DefaultNamespace:     cfg.DefaultNamespace,
 		DefaultWorkspaceCode: cfg.DefaultWorkspaceCode,
 		DefaultScopeType:     cfg.DefaultScopeType,
+		SessionID:            cfg.SessionID,
 		AutoRegister:         cfg.AutoRegister,
 		Timeout:              boardWaitRequestTimeout,
 	})
@@ -66,31 +68,52 @@ func runBoardCommand(cfg config.Config, args []string) error {
 
 	switch args[0] {
 	case "counts":
-		counts, err := client.BoardCounts(ctx, service.BoardCountsInput{})
-		if err != nil {
-			return err
-		}
-		fmt.Println(counts.Line)
-
-		return nil
+		return runBoardCounts(ctx, client, cfg.SessionID)
 	case "wait":
-		return runBoardWait(ctx, client, args[1:])
+		return runBoardWait(ctx, client, cfg.SessionID, args[1:])
 	default:
 		return fmt.Errorf("unknown board subcommand %q; use counts or wait", args[0])
 	}
 }
 
-func runBoardWait(ctx context.Context, client *api.Client, args []string) error {
+/**
+ * runBoardCounts 印一行未 resolve 計數，並把伺服器時鐘記成這個 session 之後要從哪裡開始看板。
+ */
+func runBoardCounts(ctx context.Context, client *api.Client, sessionID string) error {
+	counts, err := client.BoardCounts(ctx, service.BoardCountsInput{})
+	if err != nil {
+		return err
+	}
+	fmt.Println(counts.Line)
+	if sessionID == "" {
+		return nil
+	}
+
+	probe, err := client.WaitBoard(ctx, service.BoardWaitInput{})
+	if err != nil {
+		return err
+	}
+
+	return writeBoardSince(sessionID, probe.Now)
+}
+
+/**
+ * runBoardWait 阻塞到板上出現別人的新活動，然後以 exit 2 把這個 session 叫醒。
+ */
+func runBoardWait(ctx context.Context, client *api.Client, sessionID string, args []string) error {
 	flags := flag.NewFlagSet("board wait", flag.ContinueOnError)
 	tagList := flags.String("tags", "", "comma-separated namespace tags to watch; empty watches every tag")
 	maxWait := flags.Duration("max-wait", 0, "give up silently after this long; 0 waits until the parent process exits")
+	lookback := flags.Duration("lookback", boardWaitDefaultLookback, "how far back this watcher may look, which also caps how stale a recorded position may be; 0 only reports activity after it starts")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	tags := splitTags(*tagList)
+	if sessionID == "" {
+		sessionID = readHookPayload().SessionID
+	}
 
-	payload := readHookPayload()
-	lockKey := payload.SessionID
+	lockKey := sessionID
 	if lockKey == "" {
 		lockKey = "pid-" + strconv.Itoa(os.Getpid())
 	}
@@ -109,11 +132,11 @@ func runBoardWait(ctx context.Context, client *api.Client, args []string) error 
 		deadline = time.Now().Add(*maxWait)
 	}
 
-	first, err := client.WaitBoard(ctx, service.BoardWaitInput{Tags: tags})
+	start, err := initialBoardSince(ctx, client, sessionID, *lookback)
 	if err != nil {
 		return err
 	}
-	since := &domain.Timestamp{Time: first.Now}
+	since := &domain.Timestamp{Time: start}
 	failingSince := time.Time{}
 	retryDelay := boardWaitRetryFloor
 
@@ -151,6 +174,9 @@ func runBoardWait(ctx context.Context, client *api.Client, args []string) error 
 		}
 		failingSince = time.Time{}
 		retryDelay = boardWaitRetryFloor
+		if err := writeBoardSince(sessionID, result.Now); err != nil {
+			return err
+		}
 		if result.Changed {
 			return &exitError{
 				code:    boardWaitWakeExitCode,
@@ -186,13 +212,9 @@ func readHookPayload() hookPayload {
 
 // acquireWatcherLock 保證同一個 session 只有一個 watcher；每次 Stop 都會再起一個，多的直接退出。
 func acquireWatcherLock(key string) (func(), bool, error) {
-	directory := os.Getenv("XDG_RUNTIME_DIR")
-	if directory == "" {
-		directory = os.TempDir()
-	}
-	directory = filepath.Join(directory, "memory-recall-coin")
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return nil, false, fmt.Errorf("create watcher lock directory: %w", err)
+	directory, err := watcherStateDirectory()
+	if err != nil {
+		return nil, false, err
 	}
 	path := filepath.Join(directory, "board-wait."+sanitizeLockKey(key)+".pid")
 	if data, err := os.ReadFile(path); err == nil {
@@ -205,6 +227,95 @@ func acquireWatcherLock(key string) (func(), bool, error) {
 	}
 
 	return func() { _ = os.Remove(path) }, false, nil
+}
+
+/**
+ * initialBoardSince 決定這次 watcher 從哪看起：優先接續這個 session 上次記到的位置，沒有才回頭看 lookback 這一段。
+ */
+func initialBoardSince(
+	ctx context.Context,
+	client *api.Client,
+	sessionID string,
+	lookback time.Duration,
+) (time.Time, error) {
+	probe, err := client.WaitBoard(ctx, service.BoardWaitInput{})
+	if err != nil {
+		return time.Time{}, err
+	}
+	if sessionID == "" {
+		return probe.Now, nil
+	}
+
+	earliest := probe.Now.Add(-lookback)
+	recorded, ok, err := readBoardSince(sessionID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if ok && recorded.After(earliest) {
+		return recorded, nil
+	}
+
+	return earliest, nil
+}
+
+// watcherStateDirectory 放 lock 與 since marker，跟著 runtime dir 在重開機時一起清掉。
+func watcherStateDirectory() (string, error) {
+	directory := os.Getenv("XDG_RUNTIME_DIR")
+	if directory == "" {
+		directory = os.TempDir()
+	}
+	directory = filepath.Join(directory, "memory-recall-coin")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return "", fmt.Errorf("create watcher state directory: %w", err)
+	}
+
+	return directory, nil
+}
+
+// readBoardSince 讀這個 session 上次看到哪；檔案不存在或內容壞掉都當作沒有記錄過。
+func readBoardSince(sessionID string) (time.Time, bool, error) {
+	path, err := boardSincePath(sessionID)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("read board since marker: %w", err)
+	}
+	recorded, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(data)))
+	if err != nil {
+		return time.Time{}, false, nil
+	}
+
+	return recorded, true, nil
+}
+
+// writeBoardSince 記下這個 session 看到哪；沒有 session id 就不留記錄，行為退回每次都從 watcher 起點開始看。
+func writeBoardSince(sessionID string, moment time.Time) error {
+	if sessionID == "" {
+		return nil
+	}
+	path, err := boardSincePath(sessionID)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(moment.Format(time.RFC3339Nano)), 0o600); err != nil {
+		return fmt.Errorf("write board since marker: %w", err)
+	}
+
+	return nil
+}
+
+func boardSincePath(sessionID string) (string, error) {
+	directory, err := watcherStateDirectory()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(directory, "board-wait."+sanitizeLockKey(sessionID)+".since"), nil
 }
 
 func sanitizeLockKey(key string) string {

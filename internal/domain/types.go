@@ -53,6 +53,8 @@ type CallerIdentity struct {
 	WorkspaceCode    string `json:"workspace_code,omitempty"`
 	TailnetIdentity  string `json:"tailnet_identity,omitempty"`
 	Actor            string `json:"actor,omitempty"`
+	// SessionID 只由 caller 自述且不參與授權；一台機器上每個 agent session 一個值，用來把自己發的板上活動跟別人的分開。
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // Scope identifies where a memory is visible.
@@ -420,12 +422,13 @@ type NamespaceDeleteResult struct {
 
 // BoardMessage 是公共板 thread 裡的一則留言。
 type BoardMessage struct {
-	ID        string    `json:"id"`
-	ThreadID  string    `json:"thread_id"`
-	Body      string    `json:"body"`
-	Author    string    `json:"author,omitempty"`
-	CreatedBy string    `json:"created_by"`
-	CreatedAt time.Time `json:"created_at"`
+	ID               string    `json:"id"`
+	ThreadID         string    `json:"thread_id"`
+	Body             string    `json:"body"`
+	Author           string    `json:"author,omitempty"`
+	CreatedBy        string    `json:"created_by"`
+	CreatedBySession string    `json:"created_by_session,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 // BoardThread 是帶 namespace tag 的公共討論串，只有 open / resolved 兩態。

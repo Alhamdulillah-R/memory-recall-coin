@@ -200,6 +200,7 @@ func runLocalMCP(cfg config.Config, logger *slog.Logger) error {
 		DefaultNamespace:     cfg.DefaultNamespace,
 		DefaultWorkspaceCode: cfg.DefaultWorkspaceCode,
 		DefaultScopeType:     cfg.DefaultScopeType,
+		SessionID:            cfg.SessionID,
 		AutoRegister:         cfg.AutoRegister,
 		Timeout:              cfg.RequestTimeout,
 	})

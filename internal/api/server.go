@@ -290,6 +290,8 @@ func (s *Server) verifyCaller(ctx context.Context, assertion domain.CallerIdenti
 			return domain.CallerIdentity{}, service.NewError(service.CodeUnauthorized, "device_code does not match the registered installation")
 		}
 		cached.WorkspaceCode = assertion.WorkspaceCode
+		cached.SessionID = assertion.SessionID
+
 		return cached, nil
 	}
 
@@ -315,6 +317,7 @@ func (s *Server) verifyCaller(ctx context.Context, assertion domain.CallerIdenti
 		Actor:            identityResult.Installation.InstallationCode,
 	}
 	s.cacheIdentity(caller)
+	caller.SessionID = assertion.SessionID
 
 	return caller, nil
 }

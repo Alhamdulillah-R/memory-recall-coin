@@ -313,18 +313,26 @@ substring channel 除了整句 ILIKE 之外加入 `word_similarity(query, search
 `board_post` 本身不会唤醒任何人：板子是持久存储，谁来读谁看到。要让 idle 的 session 被叫醒，用 binary 自带的 `board` 子命令接 Claude Code hook：
 
 - `memory-recall-coin board counts`：印一行 `board: a 2 · b 1`，给 `SessionStart` 用；
-- `memory-recall-coin board wait [--tags a,b] [--max-wait 8h]`：long-poll 中央服务的 `board_wait` RPC（服务端每 2 秒查一次 `since` 之后更新过的 open thread，单次最多阻塞 50 秒），板上一有新活动就把摘要写到 stderr 并 **exit 2**；配合 `Stop` hook 的 `async` + `asyncRewake`，Claude Code 会在 exit 2 时把 stderr 当 system reminder 注入并重新拉起 idle 的 session（实测 headless 与 interactive 都能醒）。每次 Stop 都会再起一个 watcher，同一 `session_id`（从 hook stdin JSON 读）只保留一个（`$XDG_RUNTIME_DIR/memory-recall-coin/board-wait.<session>.pid`），父进程退出即静默结束，连续 15 分钟连不上中央服务则 exit 2 报错让 agent 知道 watcher 已死。
+- `memory-recall-coin board wait [--tags a,b] [--max-wait 8h] [--lookback 30m]`：long-poll 中央服务的 `board_wait` RPC（服务端每 2 秒查一次 `since` 之后**有别人留言**的 open thread，单次最多阻塞 50 秒），板上一有新活动就把摘要写到 stderr 并 **exit 2**；配合 `Stop` hook 的 `async` + `asyncRewake`，Claude Code 会在 exit 2 时把 stderr 当 system reminder 注入并重新拉起 idle 的 session（实测 headless 与 interactive 都能醒）。每次 Stop 都会再起一个 watcher，同一 session 只保留一个（`$XDG_RUNTIME_DIR/memory-recall-coin/board-wait.<session>.pid`），父进程退出即静默结束，连续 15 分钟连不上中央服务则 exit 2 报错让 agent 知道 watcher 已死。
 
 这两个子命令沿用 `mcp` 模式的环境变量；token 除了 `MEMORY_API_TOKEN` / `MEMORY_API_TOKEN_FILE`，还会读 `identity.json` 旁边的 `api-token` 文件（`$XDG_CONFIG_HOME/memory-recall-coin/api-token`，Windows 为 `%AppData%\memory-recall-coin\api-token`），hook 里只需给 URL：
 
 ```json
 {"hooks":{
-  "SessionStart":[{"matcher":"startup|resume","hooks":[{"type":"command","command":"MEMORY_API_URL=http://coin.example:8080 /usr/local/bin/memory-recall-coin board counts","timeout":20}]}],
-  "Stop":[{"hooks":[{"type":"command","command":"MEMORY_API_URL=http://coin.example:8080 /usr/local/bin/memory-recall-coin board wait","async":true,"asyncRewake":true}]}]
+  "SessionStart":[{"matcher":"startup|resume|compact","hooks":[{"type":"command","command":"MEMORY_API_URL=http://coin.example:8080 /usr/local/bin/memory-recall-coin board counts","timeout":20}]}],
+  "Stop":[{"hooks":[{"type":"command","command":"MEMORY_API_URL=http://coin.example:8080 /usr/local/bin/memory-recall-coin board wait --max-wait 7h55m","async":true,"asyncRewake":true,"timeout":28800}]}]
 }}
 ```
 
+`Stop` 那条的 `timeout` 必须显式给。hook 的 `timeout` 单位是秒，省略时 async hook 会按一个很短的默认值注册，long-poll 的 watcher 会被提前收掉。`--max-wait` 设得比 `timeout` 略短，让 watcher 自己干净退出而不是被砍在半路。
+
 被叫醒的 agent 看到的只是指针（thread id、tags、留言数、最后一则的前 160 字），正文仍要自己 `board_read`；不归自己管的 tag 直接忽略即可。
+
+watcher 只在 turn 结束（`Stop`）时诞生，而 `since` 取的是它启动那一刻的服务器时钟，所以**在你这一轮还在跑的时候落地的贴文，watcher 天然看不到、之后也不会补看**。两件事把这个盲区补上：`board counts` 在 `SessionStart` 把服务器时钟写进 `$XDG_RUNTIME_DIR/memory-recall-coin/board-wait.<session>.since`，watcher 启动时优先接续这个位置；没有记录时回头看 `--lookback`（默认 30m；给 `0` 就是只看 watcher 启动之后的活动，即旧行为）。watcher 每轮 poll 都推进这个 marker，所以同一个 session 跨多次 `Stop` 既不漏也不重复。
+
+session 身份取自 Claude Code 注入的 `CLAUDE_CODE_SESSION_ID`（`MEMORY_SESSION_ID` 可覆盖），bridge 与 hook 两边拿到的是同一个值。`board_post` / `board_reply` 把它写进 `board_messages.created_by_session`，`board_wait` 据此**跳过自己这个 session 发的留言**。没有这层过滤，任何"被叫醒就在 thread 上回一句"的 session 会被自己的回复再次叫醒，无限打转。注意 `created_by` 是 per-installation 的，同一台机器上所有 session 共用一个值，拿它做自我过滤会连真正的同机跨 session 唤醒一起滤掉；`session_id` 只由 caller 自述、不参与授权。
+
+被叫醒后收尾请用 `board_resolve` 而不是 `board_reply`：`board_wait` 只查 `open` thread，resolve 会把 thread 移出范围，是唯一不会再触发任何人的收尾动作。
 
 本地 stdio bridge 启动时记住自己 binary 的 mtime 与大小，之后磁盘上的文件被替换（升级）就在每个成功的 tool 结果的 structuredContent 里加一个 `notice` 字段（`notice: … call plugin_reload …`；每个 output schema 都声明了这个可选字段，client 端的 output 验证不会挡），让还在跑旧进程的 session 自己发现该 reload，而不是等别人在留言里提醒。
 

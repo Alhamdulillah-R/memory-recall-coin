@@ -26,6 +26,7 @@ type Config struct {
 	DefaultWorkspaceCode      string
 	DefaultScopeType          string
 	IdentityFile              string
+	SessionID                 string
 	SignalHMACSecret          string
 	EmbeddingProvider         string
 	EmbeddingURL              string
@@ -91,6 +92,7 @@ func Load(mode string) (Config, error) {
 		DefaultWorkspaceCode:      envString("MEMORY_WORKSPACE_CODE", workspace.WorkspaceCode),
 		DefaultScopeType:          envString("MEMORY_DEFAULT_SCOPE", workspace.ScopeType),
 		IdentityFile:              envString("MEMORY_IDENTITY_FILE", identityFile),
+		SessionID:                 envString("MEMORY_SESSION_ID", strings.TrimSpace(os.Getenv("CLAUDE_CODE_SESSION_ID"))),
 		SignalHMACSecret:          strings.TrimSpace(os.Getenv("MEMORY_SIGNAL_HMAC_SECRET")),
 		EmbeddingProvider:         strings.ToLower(envString("MEMORY_EMBEDDING_PROVIDER", "none")),
 		EmbeddingURL:              strings.TrimRight(strings.TrimSpace(os.Getenv("MEMORY_EMBEDDING_URL")), "/"),

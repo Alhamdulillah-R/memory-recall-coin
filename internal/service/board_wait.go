@@ -54,7 +54,7 @@ func (s *Store) WaitBoard(ctx context.Context, input BoardWaitInput) (domain.Boa
 		if err != nil {
 			return domain.BoardWaitResult{}, err
 		}
-		threads, err := s.boardActivitySince(ctx, since, tags)
+		threads, err := s.boardActivitySince(ctx, since, tags, input.Caller.SessionID)
 		if err != nil {
 			return domain.BoardWaitResult{}, err
 		}
@@ -87,19 +87,29 @@ func (s *Store) serverNow(ctx context.Context) (time.Time, error) {
 	return now, nil
 }
 
-func (s *Store) boardActivitySince(ctx context.Context, since time.Time, tags []string) ([]domain.BoardThreadHead, error) {
-	args := []any{since, boardWaitMaxThreads}
+/**
+ * boardActivitySince 撈 since 之後有別人留言的 open thread；自己這個 session 發的不算新活動。
+ */
+func (s *Store) boardActivitySince(
+	ctx context.Context,
+	since time.Time,
+	tags []string,
+	callerSession string,
+) ([]domain.BoardThreadHead, error) {
+	args := []any{since, boardWaitMaxThreads, callerSession}
 	tagFilter := ""
 	if len(tags) > 0 {
 		args = append(args, tags)
-		tagFilter = " AND t.tags && $3::text[]"
+		tagFilter = " AND t.tags && $4::text[]"
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT t.id, t.tags, t.message_count, t.updated_at, coalesce(m.author, ''), coalesce(m.body, '')
+		SELECT t.id, t.tags, t.message_count, t.updated_at, coalesce(m.author, ''), m.body
 		FROM board_threads t
-		LEFT JOIN LATERAL (
+		JOIN LATERAL (
 			SELECT author, body FROM board_messages
-			WHERE thread_id = t.id ORDER BY created_at DESC LIMIT 1
+			WHERE thread_id = t.id AND created_at > $1
+			  AND ($3 = '' OR created_by_session IS DISTINCT FROM $3)
+			ORDER BY created_at DESC LIMIT 1
 		) m ON true
 		WHERE t.status = 'open' AND t.updated_at > $1`+tagFilter+`
 		ORDER BY t.updated_at DESC

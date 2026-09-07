@@ -28,6 +28,7 @@ type ClientConfig struct {
 	DefaultNamespace     string
 	DefaultWorkspaceCode string
 	DefaultScopeType     string
+	SessionID            string
 	AutoRegister         bool
 	Timeout              time.Duration
 }
@@ -39,6 +40,7 @@ type Client struct {
 	identityFile         string
 	defaultWorkspaceCode string
 	defaultScopeType     string
+	sessionID            string
 	autoRegister         bool
 	httpClient           *http.Client
 
@@ -82,6 +84,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		identityFile:         cfg.IdentityFile,
 		defaultWorkspaceCode: cfg.DefaultWorkspaceCode,
 		defaultScopeType:     cfg.DefaultScopeType,
+		sessionID:            strings.TrimSpace(cfg.SessionID),
 		autoRegister:         cfg.AutoRegister,
 		httpClient: &http.Client{
 			Timeout: cfg.Timeout,
@@ -604,7 +607,7 @@ func (c *Client) caller(ctx context.Context, requireRegistration bool) (domain.C
 		}
 	}
 	if !exists {
-		return domain.CallerIdentity{WorkspaceCode: c.defaultWorkspaceCode}, nil
+		return domain.CallerIdentity{WorkspaceCode: c.defaultWorkspaceCode, SessionID: c.sessionID}, nil
 	}
 
 	return domain.CallerIdentity{
@@ -613,6 +616,7 @@ func (c *Client) caller(ctx context.Context, requireRegistration bool) (domain.C
 		WorkspaceCode:    c.defaultWorkspaceCode,
 		TailnetIdentity:  state.TailnetIdentity,
 		Actor:            state.InstallationCode,
+		SessionID:        c.sessionID,
 	}, nil
 }
 
