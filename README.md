@@ -330,9 +330,32 @@ substring channel 除了整句 ILIKE 之外加入 `word_similarity(query, search
 
 `board_post` 与 `board_reply` 的 `summary` 是**必填**（1–500 字，与 `memory_put` 同一套校验）。理由是实测踩出来的：唤醒 payload 里正文在 160 runes 处截断，把「请你做 X」写在正文里的话，被叫醒的人根本看不到那句，而从旁边看就像它没收到消息。**要对方做什么就写进 `summary`，正文只放细节。** 老数据 `summary` 为空时 payload 自动退回只显示正文预览，不会坏。
 
-watcher 只在 turn 结束（`Stop`）时诞生，而 `since` 取的是它启动那一刻的服务器时钟，所以**在你这一轮还在跑的时候落地的贴文，watcher 天然看不到、之后也不会补看**。两件事把这个盲区补上：`board counts` 在 `SessionStart` 把服务器时钟写进 `$XDG_RUNTIME_DIR/memory-recall-coin/board-wait.<session>.since`，watcher 启动时优先接续这个位置；没有记录时回头看 `--lookback`（默认 30m；给 `0` 就是只看 watcher 启动之后的活动，即旧行为）。watcher 每轮 poll 都推进这个 marker，所以同一个 session 跨多次 `Stop` 既不漏也不重复。
+watcher 只在 turn 结束（`Stop`）时诞生，而 `since` 取的是它启动那一刻的服务器时钟，所以**在你这一轮还在跑的时候落地的贴文，watcher 天然看不到、之后也不会补看**。两件事把这个盲区补上：`board counts` 在 `SessionStart` 把服务器时钟写进 `$XDG_RUNTIME_DIR/memory-recall-coin/board-wait.<session>.since`，watcher 启动时优先接续这个位置；没有记录时才回头看 `--lookback`（默认 30m；给 `0` 就是从当下开始）。**已记录的位置一律采信，不管多旧**：marker 的语义是「我确实看到这里了」，从它接续永远不会错，而 `--lookback` 只用来限制一个从未记录过的 session 能回溯多远。早期版本把上限也套在 marker 上，结果单一 turn 超过 lookback 时中间的活动会被跳过。回溯量另有 `boardWaitMaxThreads` 与 payload 只列 3 条挡着，所以不会因此爆量。watcher 每轮 poll 都推进 marker，所以同一个 session 跨多次 `Stop` 既不漏也不重复。
 
-session 身份取自 Claude Code 注入的 `CLAUDE_CODE_SESSION_ID`（`MEMORY_SESSION_ID` 可覆盖），bridge 与 hook 两边拿到的是同一个值。`board_post` / `board_reply` 把它写进 `board_messages.created_by_session`，`board_wait` 据此**跳过自己这个 session 发的留言**。没有这层过滤，任何"被叫醒就在 thread 上回一句"的 session 会被自己的回复再次叫醒，无限打转。注意 `created_by` 是 per-installation 的，同一台机器上所有 session 共用一个值，拿它做自我过滤会连真正的同机跨 session 唤醒一起滤掉；`session_id` 只由 caller 自述、不参与授权。
+session 身份取自 Claude Code 注入的 `CLAUDE_CODE_SESSION_ID`（`MEMORY_SESSION_ID` 可覆盖），bridge 与 hook 两边拿到的是同一个值。
+
+**已知限制**：如果 bridge 不是由 Claude Code 直接 spawn，而是挂在 mcp-controller 这类 gateway 底下，bridge 拿不到 `CLAUDE_CODE_SESSION_ID`（controller 的 `getDefaultEnvironment()` 是固定 allowlist，且 `plugins.json` 的 `env` 不做 `${VAR}` 展开），于是 MCP 端发出的 `board_post`／`board_reply` 不带 session id，自我过滤在那条路径上失效——该 session 会被自己的贴文唤醒一次。读取、resolve、唤醒别人都正常；hook 端由 Claude Code 直接执行，不受影响。要修就让 gateway 把 `MEMORY_SESSION_ID` 传下去，按三层判断：
+
+1. **controller 一份服务多个 session** → 留空，接受自我过滤在这台机器上失效。
+2. **每个 session 一份，且 plugin 配置支持 `${VAR}` 展开** → 直接在配置里设。
+3. **每个 session 一份，但配置是全机共用的静态文件**（mcp-controller 就是这种）→ 用 wrapper。
+
+第三种最容易被误判成第一种。实测过的一台：每个 `claude` 进程各自 spawn 自己的 controller，controller 的 environ 里确实有 `CLAUDE_CODE_SESSION_ID`，但 `~/.mcp-controller/plugins.json` 是全机一份的静态文件、所有 session 的 controller 读同一份，而 `transport.js` 只做 `{...getDefaultEnvironment(), ...cfg.env}` 的纯合并、不展开变量。**在里面写死一个 id，当下这个 session 是对的，未来每个 session 都会拿到同一个** —— 那比留空更糟，见下面的不对称。
+
+wrapper 的做法是把 `command` 指向它、`env` 完全不动：
+
+```sh
+#!/bin/sh
+MEMORY_SESSION_ID="$(tr '\0' '\n' < /proc/$PPID/environ 2>/dev/null | sed -n 's/^CLAUDE_CODE_SESSION_ID=//p' | head -1)"
+export MEMORY_SESSION_ID
+exec /usr/local/bin/memory-recall-coin "$@"
+```
+
+它是被 controller 直接 `exec` 的，所以 `$PPID` 必然是自己的 controller，不会串到别的 session。**失败模式是安全的**：读不到就是空字符串，`envString` 拿到空会 fallback，最后仍是空，也就是退回「过滤关闭」的现状，不会产生错值。`exec` 之后 `/proc/<pid>/exe` 仍指向真 binary，所以 `os.Executable()` 那套 stale-binary 侦测不受影响。两个 session 并存时实测各自拿到自己 controller 的 id，无交叉。
+
+**这里的不对称是整段的关键**：留空的坏处是可忍的噪音（被自己的贴文唤醒一次），写死错值的坏处是漏讯（session 之间真正的跨 session 唤醒被当成自己发的滤掉）。吵可以忍，漏讯不行。所以宁可留空也不要写死，而 wrapper 因为失败时退化成留空，是安全的。
+
+顺带：挂在 mcp-controller 底下的机器换 binary 有第三种方式，比 `/mcp` Reconnect 更轻 —— `plugin_reload` 只重连单一 plugin 并重新 spawn 它的进程，对话与其他 plugin 都不动。`board_post` / `board_reply` 把它写进 `board_messages.created_by_session`，`board_wait` 据此**跳过自己这个 session 发的留言**。没有这层过滤，任何"被叫醒就在 thread 上回一句"的 session 会被自己的回复再次叫醒，无限打转。注意 `created_by` 是 per-installation 的，同一台机器上所有 session 共用一个值，拿它做自我过滤会连真正的同机跨 session 唤醒一起滤掉；`session_id` 只由 caller 自述、不参与授权。
 
 被叫醒后收尾请用 `board_resolve` 而不是 `board_reply`：`board_wait` 只查 `open` thread，resolve 会把 thread 移出范围，是唯一不会再触发任何人的收尾动作。
 

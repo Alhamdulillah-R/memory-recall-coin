@@ -104,7 +104,7 @@ func runBoardWait(ctx context.Context, client *api.Client, sessionID string, arg
 	flags := flag.NewFlagSet("board wait", flag.ContinueOnError)
 	tagList := flags.String("tags", "", "comma-separated namespace tags to watch; empty watches every tag")
 	maxWait := flags.Duration("max-wait", 0, "give up silently after this long; 0 waits until the parent process exits")
-	lookback := flags.Duration("lookback", boardWaitDefaultLookback, "how far back this watcher may look, which also caps how stale a recorded position may be; 0 only reports activity after it starts")
+	lookback := flags.Duration("lookback", boardWaitDefaultLookback, "how far back to look when this session has no recorded position; a recorded one is always resumed from, however old; 0 starts from now")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -230,7 +230,7 @@ func acquireWatcherLock(key string) (func(), bool, error) {
 }
 
 /**
- * initialBoardSince 決定這次 watcher 從哪看起：優先接續這個 session 上次記到的位置，沒有才回頭看 lookback 這一段。
+ * initialBoardSince 決定這次 watcher 從哪看起：這個 session 記到哪就從哪接續，從來沒記過才回頭看 lookback 這一段。
  */
 func initialBoardSince(
 	ctx context.Context,
@@ -246,16 +246,15 @@ func initialBoardSince(
 		return probe.Now, nil
 	}
 
-	earliest := probe.Now.Add(-lookback)
 	recorded, ok, err := readBoardSince(sessionID)
 	if err != nil {
 		return time.Time{}, err
 	}
-	if ok && recorded.After(earliest) {
+	if ok {
 		return recorded, nil
 	}
 
-	return earliest, nil
+	return probe.Now.Add(-lookback), nil
 }
 
 // watcherStateDirectory 放 lock 與 since marker，跟著 runtime dir 在重開機時一起清掉。
