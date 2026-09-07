@@ -205,7 +205,7 @@ func addTools(server *mcp.Server, handlers *Handlers) {
 	addTypedTool(server, catalog, tool("device_migrate", "Merge a source logical device into a canonical target without rewriting provenance.", false, true, true), handlers.migrateDevice)
 	addTypedTool(server, catalog, tool("device_whoami", "Resolve the current installation, canonical logical device and workspace identity.", true, true, false), handlers.whoAmI)
 	addTypedTool(server, catalog, tool("memory_health", "Check central PostgreSQL and embedding provider status.", true, true, false), handlers.health)
-	// 公共板這組工具的中文名是「敲敲」：貼文是留言，board wait 那個 hook 才是真的去敲別人的門。
+	// 公共板這組工具的中文名是「敲敲」：敲敲留言、敲敲傳訊息來了。
 	addTypedTool(server, catalog, tool("board_post", "Open a public board thread tagged with the namespaces it concerns, for agents in other sessions to pick up.", false, false, false), handlers.boardPost)
 	addTypedTool(server, catalog, tool("board_counts", "One-line count of open board threads per namespace tag; cheap enough to call at session start.", true, true, false), handlers.boardCounts)
 	addTypedTool(server, catalog, tool("board_read", "Read board threads with their messages, filtered by namespace tags; unresolved only by default.", true, true, false), handlers.boardRead)
