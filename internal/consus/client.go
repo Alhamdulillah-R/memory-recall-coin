@@ -114,6 +114,7 @@ type LinkInput struct {
 	SHA256      string         `json:"sha256"`
 	Namespace   string         `json:"namespace"`
 	Name        string         `json:"name"`
+	ContentType string         `json:"content_type,omitempty"`
 	TTL         string         `json:"ttl,omitempty"`
 	Tags        []string       `json:"tags,omitempty"`
 	Metadata    map[string]any `json:"metadata,omitempty"`

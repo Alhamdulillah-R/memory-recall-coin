@@ -225,6 +225,7 @@ func linkIfPresent(
 		SHA256:      digest,
 		Namespace:   input.Namespace,
 		Name:        name,
+		ContentType: contentTypeFor(name),
 		TTL:         input.TTL,
 		Tags:        input.Tags,
 		Metadata:    input.Metadata,
