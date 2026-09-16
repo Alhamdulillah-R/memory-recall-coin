@@ -309,11 +309,8 @@ func hashFile(path string) (digest string, err error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-// contentTypeFor 按副檔名推型別；.har 不在系統 mime table 裡，單獨映射。
+// contentTypeFor 按副檔名推型別；推不出來就送 octet-stream，伺服器會用它自己那張表補。
 func contentTypeFor(name string) string {
-	if strings.EqualFold(filepath.Ext(name), ".har") {
-		return "application/json"
-	}
 	guessed := mime.TypeByExtension(filepath.Ext(name))
 	if guessed == "" {
 		return "application/octet-stream"
