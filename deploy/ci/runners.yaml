@@ -78,6 +78,13 @@ spec:
         app.kubernetes.io/part-of: mignon-ci
         mignon.dev/runner-role: test
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
       automountServiceAccountToken: false
       enableServiceLinks: false
       imagePullSecrets:
@@ -148,7 +155,7 @@ spec:
               value: /tmp
           resources:
             requests:
-              cpu: 250m
+              cpu: 50m
               memory: 128Mi
             limits:
               cpu: "2"
@@ -311,7 +318,7 @@ spec:
               value: /runner-state/buildx
           resources:
             requests:
-              cpu: 250m
+              cpu: 25m
               memory: 192Mi
             limits:
               cpu: "2"
@@ -385,12 +392,17 @@ spec:
         app.kubernetes.io/part-of: mignon-ci
         mignon.dev/runner-role: deploy
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
       automountServiceAccountToken: false
       enableServiceLinks: false
       imagePullSecrets:
         - name: registry-pull
-      nodeSelector:
-        kubernetes.io/hostname: k3s-master
       restartPolicy: Always
       securityContext:
         runAsNonRoot: true
@@ -491,7 +503,7 @@ spec:
                 /etc/mignon-ci/kubeconfigs/Alhamdulillah-R__memory-recall-coin.yaml
           resources:
             requests:
-              cpu: 100m
+              cpu: 25m
               memory: 192Mi
             limits:
               cpu: "1"
