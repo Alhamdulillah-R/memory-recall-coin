@@ -176,7 +176,7 @@ codex mcp list
 
 也可以在 Codex/ChatGPT desktop 的 `/mcp` 面板检查连接。配置字段参考 [OpenAI 官方 MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
 
-## 32 个 MCP tools（另有 `board` CLI 子命令）
+## 41 个 MCP tools（另有 `board` CLI 子命令）
 
 Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_recall` 跨显式 namespace roots 完成 opinionated recall，`memory_search` 提供底层检索控制，`memory_list` 无 query 浏览过滤结果，`namespace_list` 浏览 namespace tree，`memory_get` 按 ID/version 精确读取。其余 tools 用于 revision、lifecycle、source ingestion 和 device identity 等高级操作。
 
@@ -198,6 +198,15 @@ Agent 的主路径是：`memory_put` 写入 durable knowledge，`memory_recall` 
 | `memory_refute` | 标记 memory 为 refuted，并附 reason、evidence 或 refuting memory |
 | `memory_touch` | 延长、替换或清除 TTL，使用 optimistic concurrency |
 | `memory_pin` | 标记重要：设置一等 `pinned` 欄位并清除 expiration；`unpin=true` 反向 |
+| `object_put` | 把本机文件或目录存进 consus 并回传 object ID；bridge 自己读档、算 sha256、发 HTTP，bytes 不经过 MCP 通道，目录先打成一个 tar.gz |
+| `object_get` | 按 ID（可指定 version）把 object 下载到本机路径 |
+| `object_list` | 列出 namespace 下的 object，可含 subtree 与 tag 过滤 |
+| `object_meta` | 读一条 object 的完整记录，含版本列表 |
+| `object_resolve` | 用 namespace 加名字换出 object，不必先知道 ID |
+| `object_patch` | 改 name、tags、metadata、保留版本数或过期时间 |
+| `object_touch` | 以新的 TTL 重算过期时间 |
+| `object_delete` | 软删 object，72 小时内可 restore |
+| `object_restore` | 恢复软删的 object |
 | `memory_ingest_path` | 在本机扫描、hash、增量上传并可选 watch 文件或目录；仅 stdio bridge 可读取 path |
 | `memory_ingest_status` | 按 ingestion ID 查询 source 与 embedding 状态 |
 | `memory_source_status` | 在显式 namespace 下按 `source_id`、`path`、`ingestion_id` 至少一个 selector 查询 hash、generation、parser、TTL 和 embedding 状态；不接收 `scope_mode` |
@@ -305,6 +314,27 @@ substring channel 除了整句 ILIKE 之外加入 `word_similarity(query, search
 `pinned` 是 memory 的一等布尔欄位，取代各 session 自己发明的「标题加 ★ 前缀 / tag 加 key-finding / metadata 塞 importance」慣例。`memory_put` 与 `memory_patch` 接受 `pinned`，`memory_pin` 设旗标并清 expiration（`unpin=true` 只清旗标），`memory_touch` 的 `pin`/`unpin` 同义。所有结果（search/recall/list/get、receipt、history snapshot、restore）都带 `pinned`；排序上 pinned 在相近相关度时加 0.03 boost（与 confirmed/evidence 的 quality boost 同量级，不会压过明显更相关的结果）；`memory_search`/`memory_list` 的 `pinned_only=true` 只回 pinned 的 memory（不含 source chunk）。
 
 `namespaces` 与 `namespace_sequences` 可以混用，总数最多 8 个；两者都不传时做一次全库 recall，`attempts` 里对应项标记 `all_namespaces=true`，response 的 `namespace_match` 为 `all`。带 selector 时 `memory_recall` 默认 `namespace_match=subtree`、`scope_mode=all_devices`，固定同时搜索 memory 与 source chunk，跨重叠 roots 去重后统一排序；每次 namespace lookup 的 resolved path、命中数、semantic 状态与耗时会放在 `attempts`。
+
+### 对象存储（consus）
+
+memory 适合放结论、证据、根因、流程；HAR、recording、jsonl.gz、二进位、大型 diff 这些不该塞进 memory 正文。它们走 `object_*`，存进 [consus](https://github.com/Alhamdulillah-R/mignon-consus) 换一个 `obj_ID`，再把 ID 写进 memory 的 `metadata`。
+
+**namespace 两边共用同一套字串**（`rex-mirror-realm/incapsula`、`spider-airline/tls`），consus 把 namespace 当目录树，所以同一个 namespace 在两边指的是同一件事。关联约定是两边各记对方 ID，没有跨服务外键：memory 的 metadata 放 `{"consus": ["obj_..."]}`，object 的 metadata 放 `{"memory_id": "mem_..."}`。
+
+**bytes 不经过 MCP 通道。** MCP 走 stdio 传 JSON，1 GiB 的档案不可能 base64 塞进工具呼叫，所以 `object_put` 收的是**路径**，由 bridge 在本机读档、算 sha256、自己发 HTTP，跟 `memory_ingest_path` 同一条路。中央服务读不到工作站的磁碟，因此这组 tool 只在 stdio bridge 可用；没配 `CONSUS_URL`／`CONSUS_TOKEN` 时回 `UNAVAILABLE`。
+
+**上传前先问 precheck。** 算完 sha256 先打 `/v1/blobs/precheck`，命中就走 `/v1/objects/link` 把已存在的内容挂成新 object，完全不传 bytes；回传的 `uploaded` 欄位说明这次有没有真的送。重复 ingest 同一份 recording 时差别很大，尤其 WSL 经 tailnet 到东京只有约 2 MiB/s。
+
+**目录会打成一个 tar.gz**，上限 1 GiB，边压边算，超了立刻中止。归档参数对齐 consus CLI：PAX 格式、`AccessTime`／`ChangeTime` 清成零值、`filepath.Walk` 的字典序、symlink 不跟随而是记成 link entry。清零而不是填固定值，是因为 Go 的 tar 在 PAX 下看到零值就不写那条 extended record；而打包这个动作本身会读档因而改 atime，记进归档就等于每次产出不同 bytes，内容定址全失效。实测同一个目录连打三次 sha256 完全相同。
+
+**上传失败整笔重来**，服务端没有分块也没有 resumable。重试前先 precheck：上一趟可能已经写进去了、只是回应阶段断线，命中就直接 link，不必重传。
+
+配置：
+
+```bash
+CONSUS_URL=http://100.119.87.38:18090
+CONSUS_TOKEN=consus_<ulid>_<secret>     # 或 CONSUS_TOKEN_FILE 指向 0600 的档案
+```
 
 ### 公共板（敲敲）
 

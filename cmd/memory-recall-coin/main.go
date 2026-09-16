@@ -20,6 +20,7 @@ import (
 
 	"github.com/Alhamdulillah-R/memory-recall-coin/internal/api"
 	"github.com/Alhamdulillah-R/memory-recall-coin/internal/config"
+	"github.com/Alhamdulillah-R/memory-recall-coin/internal/consus"
 	"github.com/Alhamdulillah-R/memory-recall-coin/internal/database"
 	"github.com/Alhamdulillah-R/memory-recall-coin/internal/embedding"
 	"github.com/Alhamdulillah-R/memory-recall-coin/internal/ingest"
@@ -217,10 +218,16 @@ func runLocalMCP(cfg config.Config, logger *slog.Logger) error {
 		}
 	}()
 
+	consusClient, err := createConsusClient(cfg, logger)
+	if err != nil {
+		return err
+	}
+
 	server := mcpserver.New(client, mcpserver.Options{
 		Version:          version,
 		Logger:           logger,
 		IngestionManager: manager,
+		ConsusClient:     consusClient,
 		DefaultNamespace: cfg.DefaultNamespace,
 	})
 	logger.Info("local stdio MCP bridge started", "api_url", cfg.APIURL, "version", version)
@@ -229,6 +236,28 @@ func runLocalMCP(cfg config.Config, logger *slog.Logger) error {
 	}
 
 	return nil
+}
+
+/**
+ * createConsusClient 只在 bridge 同時給了 URL 與 token 時才建；缺任一個就讓 object_* 回 UNAVAILABLE。
+ */
+func createConsusClient(cfg config.Config, logger *slog.Logger) (*consus.Client, error) {
+	if cfg.ConsusURL == "" || cfg.ConsusToken == "" {
+		logger.Info("object storage disabled", "reason", "CONSUS_URL or CONSUS_TOKEN is empty")
+
+		return nil, nil
+	}
+
+	client, err := consus.NewClient(consus.Config{
+		BaseURL: cfg.ConsusURL,
+		Token:   cfg.ConsusToken,
+	})
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("object storage enabled", "url", cfg.ConsusURL)
+
+	return client, nil
 }
 
 func isNormalStdioClose(err error) bool {
