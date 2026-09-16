@@ -82,8 +82,6 @@ spec:
       enableServiceLinks: false
       imagePullSecrets:
         - name: registry-pull
-      nodeSelector:
-        kubernetes.io/hostname: k3s-master
       restartPolicy: Always
       securityContext:
         runAsNonRoot: true
@@ -151,7 +149,7 @@ spec:
           resources:
             requests:
               cpu: 250m
-              memory: 512Mi
+              memory: 128Mi
             limits:
               cpu: "2"
               memory: 3Gi
@@ -314,7 +312,7 @@ spec:
           resources:
             requests:
               cpu: 250m
-              memory: 512Mi
+              memory: 192Mi
             limits:
               cpu: "2"
               memory: 3Gi
@@ -494,7 +492,7 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 256Mi
+              memory: 192Mi
             limits:
               cpu: "1"
               memory: 1Gi
