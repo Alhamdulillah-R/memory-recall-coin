@@ -527,7 +527,8 @@ func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
 		setArrayPropertyBounds(schema, "tags", 1, 8)
 	}
 	if toolName == "memory_source_status" {
-		requireAnyInputProperty(schema, "source_id", "path", "ingestion_id")
+		// 至少一個 source selector 由 SourceStatus 在運行時把關：
+		// 頂層 anyOf 會被 Anthropic API 拒絕，導致整支 tool 被客戶端丟掉。
 		schema.Examples = []any{
 			map[string]any{
 				"namespace": "projects/example",
@@ -553,19 +554,6 @@ func applyInputSchemaConstraints(toolName string, schema *jsonschema.Schema) {
 	}
 }
 
-func requireAnyInputProperty(schema *jsonschema.Schema, names ...string) {
-	if schema == nil {
-		return
-	}
-
-	for _, name := range names {
-		if _, exists := schema.Properties[name]; !exists {
-			continue
-		}
-		schema.AnyOf = append(schema.AnyOf, &jsonschema.Schema{Required: []string{name}})
-	}
-}
-
 func applyNamespaceSelectorConstraint(toolName string, schema *jsonschema.Schema) {
 	if schema == nil {
 		return
@@ -583,29 +571,14 @@ func applyNamespaceSelectorConstraint(toolName string, schema *jsonschema.Schema
 	}
 
 	removeRequiredProperties(schema, "namespace", "namespace_sequence")
-	// 讀取類 tool 的 selector 可以整組省略＝全庫
-	if toolName == "memory_search" || toolName == "memory_list" {
-		forbidPropertyPair(schema, "namespace", "namespace_sequence")
-		return
-	}
-	schema.OneOf = append(schema.OneOf,
-		requireOnlyProperty("namespace", "namespace_sequence"),
-		requireOnlyProperty("namespace_sequence", "namespace"),
-	)
+	// Anthropic API 不接受頂層 oneOf/anyOf/allOf，客戶端會整支 tool 丟掉；
+	// 互斥改用頂層 not 表達，required-exactly-one 由 resolveNamespaceSelector 把關。
+	forbidPropertyPair(schema, "namespace", "namespace_sequence")
 }
 
 func forbidPropertyPair(schema *jsonschema.Schema, first, second string) {
 	schema.Not = &jsonschema.Schema{
 		Required: []string{first, second},
-	}
-}
-
-func requireOnlyProperty(required, forbidden string) *jsonschema.Schema {
-	return &jsonschema.Schema{
-		Required: []string{required},
-		Not: &jsonschema.Schema{
-			Required: []string{forbidden},
-		},
 	}
 }
 
